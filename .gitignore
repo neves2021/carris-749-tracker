@@ -2,3 +2,9 @@ node_modules/
 *.backup.js
 *.before-passage.js
 *.pre-render.js
+analyze-*.js
+debug-*.js
+inspect-*.js
+measure-*.js
+eta-749-live.js
+eta-749.js
