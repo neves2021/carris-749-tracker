@@ -340,6 +340,33 @@ async function prepareData() {
   }
 
   // ==========================
+  // STOPS
+  // ==========================
+
+  const stops =
+    readCsv(zip, 'stops.txt');
+
+  const stopIdIndex =
+    stops.header.indexOf(
+      'stop_id'
+    );
+
+  const stopNameIndex =
+    stops.header.indexOf(
+      'stop_name'
+    );
+
+  const stopNames =
+    new Map();
+
+  for (const row of stops.rows) {
+    stopNames.set(
+      row[stopIdIndex],
+      row[stopNameIndex]
+    );
+  }
+
+  // ==========================
   // SHAPES
   // ==========================
 
@@ -502,50 +529,29 @@ async function prepareData() {
     routeTrips,
     stopTimesByTrip,
     targetsByTrip,
-    shapesById
+    shapesById,
+    stopNames
   };
 }
 
-// ==========================
-// DETERMINAR SENTIDO DO TRIP
-// ==========================
-
 function getTripDirection(stops) {
+  if (!stops || stops.length < 2) return null;
+
+  const first = stops[0];
+  const last = stops[stops.length - 1];
+
   if (
-    !stops ||
-    stops.length < 2
+    !Number.isFinite(first.shapeDist) ||
+    !Number.isFinite(last.shapeDist)
   ) {
     return null;
   }
 
-  const first =
-    stops[0];
-
-  const last =
-    stops[stops.length - 1];
-
-  if (
-    !Number.isFinite(
-      first.shapeDist
-    ) ||
-    !Number.isFinite(
-      last.shapeDist
-    )
-  ) {
-    return null;
-  }
-
-  if (
-    last.shapeDist >
-    first.shapeDist
-  ) {
+  if (last.shapeDist > first.shapeDist) {
     return 1;
   }
 
-  if (
-    last.shapeDist <
-    first.shapeDist
-  ) {
+  if (last.shapeDist < first.shapeDist) {
     return -1;
   }
 
@@ -559,6 +565,10 @@ function getTripDirection(stops) {
 async function getVehicles(data) {
   const feed =
     await loadRealtime();
+
+  console.log(
+    `Realtime entities: ${feed.entity.length}`
+  );
 
   const vehicles = [];
 
@@ -582,14 +592,15 @@ async function getVehicles(data) {
     }
 
     const trip =
-      data.routeTrips.get(
-        tripId
-      );
+      data.routeTrips.get(tripId);
 
     if (!trip) {
       continue;
     }
 
+    console.log(
+      `Trip encontrado: ${tripId} | veículo: ${vehicle.vehicle.id}`
+    );
     const targets =
       data.targetsByTrip.get(
         tripId
@@ -648,12 +659,33 @@ async function getVehicles(data) {
       data.stopTimesByTrip.get(
         tripId
       );
-
     const direction =
       getTripDirection(
         stops
       );
 
+    const currentStopSequence =
+      Number(
+        vehicle.currentStopSequence
+      );
+
+    const currentStop =
+      stops?.find(
+        stop =>
+          stop.sequence ===
+          currentStopSequence
+      );
+
+    const currentStopName =
+      currentStop
+        ? data.stopNames.get(
+          currentStop.stopId
+        )
+        : null;
+
+    console.log(
+      `DEBUG ${vehicle.vehicle.id} | trip=${tripId} | direction=${direction} | seq=${currentStopSequence} | stop=${currentStopName ?? '—'} | shapeDist=${matched.shapeDist.toFixed(1)}`
+    );
     for (const target of targets) {
       let remaining;
 
@@ -669,6 +701,9 @@ async function getVehicles(data) {
         continue;
       }
 
+      console.log(
+        `DEBUG TARGET ${vehicle.vehicle.id} | ${target.targetName} | targetDist=${target.targetShapeDist} | vehicleDist=${matched.shapeDist.toFixed(1)} | remaining=${remaining.toFixed(1)}`
+      );
       /*
        * Se o ve�culo j� passou o target,
        * n�o � candidato a esta paragem.
@@ -699,6 +734,12 @@ async function getVehicles(data) {
 
         currentStopSequence:
           vehicle.currentStopSequence,
+
+        currentStopId:
+          currentStop?.stopId ?? null,
+
+        currentStopName:
+          currentStopName ?? null,
 
         targetStopSequence:
           target.stopSequence,
@@ -778,76 +819,117 @@ function formatAge(seconds) {
 // ==========================
 
 function calculateSpeed(history) {
-  if (
-    history.length < 2
-  ) {
+  if (!history || history.length < 2) {
     return {
       instant: null,
       average: null
     };
   }
 
-  const previous =
-    history[
-      history.length - 2
-    ];
+  const segments = [];
 
-  const current =
-    history[
-      history.length - 1
-    ];
-
-  const dt =
-    current.timestamp -
-    previous.timestamp;
-
-  const dd =
-    Math.abs(
-      current.shapeDist -
-      previous.shapeDist
-    );
-
-  let instant = null;
-
-  if (
-    dt > 0 &&
-    dd >= 0
+  for (
+    let i = 1;
+    i < history.length;
+    i++
   ) {
-    instant =
+    const previous =
+      history[i - 1];
+
+    const current =
+      history[i];
+
+    const dt =
+      current.timestamp -
+      previous.timestamp;
+
+    const dd =
+      Math.abs(
+        current.shapeDist -
+        previous.shapeDist
+      );
+
+    if (
+      dt <= 0 ||
+      dd < 20
+    ) {
+      continue;
+    }
+
+    const speed =
       (dd / dt) * 3.6;
+
+    if (
+      speed >= 2 &&
+      speed <= 60
+    ) {
+      segments.push({
+        speed,
+        dt
+      });
+    }
   }
 
+  if (segments.length === 0) {
+    return {
+      instant: null,
+      average: null
+    };
+  }
+
+  const instant =
+    segments[
+      segments.length - 1
+    ].speed;
+
+  /*
+   * Não calcular velocidade média/ETA
+   * com menos de 3 segmentos válidos.
+   */
+  if (segments.length < 3) {
+    return {
+      instant,
+      average: null
+    };
+  }
+
+  /*
+   * Para a ETA usamos a mediana
+   * das velocidades recentes.
+   *
+   * Isto reduz o impacto de:
+   * - GPS instável
+   * - saltos no map matching
+   * - velocidades instantâneas anormais
+   */
   const recent =
-    history.slice(
+    segments.slice(
       -SPEED_HISTORY_SIZE
     );
 
-  const first =
-    recent[0];
+  const sortedSpeeds =
+    recent
+      .map(segment => segment.speed)
+      .sort((a, b) => a - b);
 
-  const last =
-    recent[
-      recent.length - 1
-    ];
-
-  const totalDt =
-    last.timestamp -
-    first.timestamp;
-
-  const totalDd =
-    Math.abs(
-      last.shapeDist -
-      first.shapeDist
+  const middle =
+    Math.floor(
+      sortedSpeeds.length / 2
     );
 
-  let average = null;
+  let average;
 
   if (
-    totalDt > 0 &&
-    totalDd >= 0
+    sortedSpeeds.length % 2 === 0
   ) {
     average =
-      (totalDd / totalDt) * 3.6;
+      (
+        sortedSpeeds[middle - 1] +
+        sortedSpeeds[middle]
+      ) / 2;
+  } else {
+    average =
+      sortedSpeeds[middle];
   }
 
   return {
@@ -896,15 +978,11 @@ function buildStatus(tracker, currentKeys) {
         .map(([, state]) => state.lastResult)
         .sort(
           (a, b) =>
-            (a.eta ?? Infinity) -
-            (b.eta ?? Infinity)
+            a.remaining - b.remaining
         );
 
       const next =
-        vehicles.find(
-          vehicle =>
-            vehicle.eta !== null
-        );
+        vehicles[0] ?? null;
 
       return {
         id: target.id,
@@ -913,16 +991,20 @@ function buildStatus(tracker, currentKeys) {
 
         next: next
           ? {
-              vehicleId: next.vehicleId,
-              etaSeconds: next.eta,
-              remainingMeters: next.remaining,
-              averageSpeedKmh: next.averageSpeed,
-              timestamp: next.timestamp
-            }
+            vehicleId: next.vehicleId,
+            currentStopName:
+              next.currentStopName,
+            etaSeconds: next.eta,
+            remainingMeters: next.remaining,
+            averageSpeedKmh: next.averageSpeed,
+            timestamp: next.timestamp
+          }
           : null,
 
         vehicles: vehicles.map(vehicle => ({
           vehicleId: vehicle.vehicleId,
+          currentStopName:
+            vehicle.currentStopName,
           etaSeconds: vehicle.eta,
           remainingMeters: vehicle.remaining,
           averageSpeedKmh: vehicle.averageSpeed,
@@ -982,24 +1064,53 @@ function startWebServer(getStatus) {
           '<div id="app">A carregar...</div>',
           '</main>',
           '<script>',
-          'function fmtEta(s){if(s==null)return "A recolher dados";if(s<60)return Math.round(s)+" s";return Math.floor(s/60)+" min "+Math.round(s%60)+" s";}',
-          'function age(t){if(!t)return "";return "Atualizado há "+Math.round(Math.max(0,(Date.now()-t*1000)/1000))+" s";}',
+          'function fmtEta(s){',
+          'if(s==null)return "A calcular";',
+          'const totalSeconds=Math.max(0,Math.round(s));',
+          'const minutes=Math.floor(totalSeconds/60);',
+          'const seconds=totalSeconds%60;',
+          'if(minutes===0)return seconds+" s";',
+          'if(seconds===0)return minutes+"m";',
+          'return minutes+"m "+seconds+"s";',
+          '}',
+          'function vehicleHtml(v,isNext){',
+          'return "<div class=\\"vehicle "+(isNext?"next":"")+"\\">"+',
+          '"<div class=\\"vehicle-header\\">"+',
+          '"<span class=\\"vehicle-id\\">"+v.vehicleId+"</span>"+',
+          '(isNext?"<span class=\\"badge\\">PRÓXIMO</span>":"")+',
+          '"</div>"+',
+          '"<div class=\\"vehicle-stop\\">"+(v.currentStopName||"Localização desconhecida")+"</div>"+',
+          '"<div class=\\"vehicle-distance\\">"+Math.round(v.remainingMeters)+" m</div>"+',
+          '"<div class=\\"vehicle-meta\\">ETA: "+fmtEta(v.etaSeconds)+" · "+',
+          '(v.averageSpeedKmh==null?"velocidade a calcular":v.averageSpeedKmh.toFixed(1)+" km/h")+',
+          '"</div>"+',
+          '"</div>";',
+          '}',
           'async function refresh(){',
           'try{',
           'const r=await fetch("/api/status",{cache:"no-store"});',
+          'if(!r.ok)throw new Error("HTTP "+r.status);',
           'const d=await r.json();',
           'document.getElementById("app").innerHTML=d.targets.map(function(t){',
-          'var n=t.next;',
-          'return "<div class=\"card\">"+',
-          '"<div class=\"route\">"+t.name+" → "+t.destination+"</div>"+',
-          '(n ? "<div class=\"eta\">"+fmtEta(n.etaSeconds)+"</div>"+',
-          '"<div class=\"meta\">Veículo: <b>"+n.vehicleId+"</b><br>"+',
-          '"Distância: "+Math.round(n.remainingMeters)+" m<br>"+',
-          '"Velocidade: "+(n.averageSpeedKmh==null?"a recolher":n.averageSpeedKmh.toFixed(1)+" km/h")+"</div>"+',
-          '"<div class=\"small\">"+age(n.timestamp)+"</div>" :',
-          '"<div class=\"none\">Nenhum 749 atualmente a caminho.</div>")+"</div>";',
+          'const vehicles=t.vehicles||[];',
+          'const n=t.next;',
+          'if(!n){',
+          'return "<div class=\\"card\\">"+',
+          '"<div class=\\"route\\">"+t.name+" → "+t.destination+"</div>"+',
+          '"<div class=\\"none\\"><strong>Sem 749 a caminho neste momento</strong><br>A aguardar o próximo veículo.</div>"+',
+          '"</div>";',
+          '}',
+          'const others=vehicles.slice(1);',
+          'return "<div class=\\"card\\">"+',
+          '"<div class=\\"route\\">"+t.name+" → "+t.destination+"</div>"+',
+          'vehicleHtml(n,true)+',
+          '(others.length ? "<div class=\\"others-title\\">OUTROS 749</div>"+others.map(function(v){return vehicleHtml(v,false);}).join("") : "")+',
+          '"</div>";',
           '}).join("");',
-          '}catch(e){document.getElementById("app").innerHTML="<div class=\"card\">Erro ao obter dados.</div>";}',
+          '}catch(e){',
+          'console.error(e);',
+          'document.getElementById("app").innerHTML="<div class=\\"card\\">Erro ao obter dados: "+e.message+"</div>";',
+          '}',
           '}',
           'refresh();',
           'setInterval(refresh,15000);',
@@ -1165,13 +1276,13 @@ async function main() {
 
         const lastSample =
           history[
-            history.length - 1
+          history.length - 1
           ];
 
         if (
           !lastSample ||
           lastSample.timestamp !==
-            vehicle.timestamp
+          vehicle.timestamp
         ) {
           history.push({
             timestamp:
@@ -1233,7 +1344,7 @@ async function main() {
 
         if (
           vehicle.remaining <=
-            ARRIVAL_TOLERANCE_M &&
+          ARRIVAL_TOLERANCE_M &&
           !state.passed
         ) {
           state.passed =
@@ -1242,8 +1353,9 @@ async function main() {
           console.log(
             `\n[${formatTime(vehicle.timestamp)}] >>> ${vehicle.vehicleId} PASSOU ${vehicle.targetName} <<<`
           );
-        }
 
+          continue;
+        }
         // ==========================
         // LEITURA
         // ==========================
@@ -1261,7 +1373,9 @@ async function main() {
         );
 
         console.log(
-          `  Current seq:   ${vehicle.currentStopSequence ?? '�'}`
+          `  Paragem atual:  ${vehicle.currentStopName ??
+          `seq ${vehicle.currentStopSequence ?? '—'}`
+          }`
         );
 
         console.log(
@@ -1281,28 +1395,25 @@ async function main() {
         );
 
         console.log(
-          `  Vel. instant.: ${
-            speeds.instant === null
-              ? '�'
-              : speeds.instant.toFixed(1) +
-                ' km/h'
+          `  Vel. instant.: ${speeds.instant === null
+            ? '�'
+            : speeds.instant.toFixed(1) +
+            ' km/h'
           }`
         );
 
         console.log(
-          `  Vel. m�dia:    ${
-            speeds.average === null
-              ? 'a recolher dados'
-              : speeds.average.toFixed(1) +
-                ' km/h'
+          `  Vel. m�dia:    ${speeds.average === null
+            ? 'a recolher dados'
+            : speeds.average.toFixed(1) +
+            ' km/h'
           }`
         );
 
         console.log(
-          `  ETA:           ${
-            eta === null
-              ? 'a recolher dados'
-              : formatMinutes(eta)
+          `  ETA:           ${eta === null
+            ? 'a recolher dados'
+            : formatMinutes(eta)
           }`
         );
       }
@@ -1372,21 +1483,19 @@ async function main() {
             );
 
             console.log(
-              `  �ltima vel. m�dia:  ${
-                last.averageSpeed === null
-                  ? '�'
-                  : last.averageSpeed.toFixed(1) +
-                    ' km/h'
+              `  �ltima vel. m�dia:  ${last.averageSpeed === null
+                ? '�'
+                : last.averageSpeed.toFixed(1) +
+                ' km/h'
               }`
             );
 
             console.log(
-              `  �ltimo ETA:         ${
-                last.eta === null
-                  ? '�'
-                  : formatMinutes(
-                      last.eta
-                    )
+              `  �ltimo ETA:         ${last.eta === null
+                ? '�'
+                : formatMinutes(
+                  last.eta
+                )
               }`
             );
           }
@@ -1447,18 +1556,22 @@ async function main() {
         }
 
         const next =
-          active.find(
-            v =>
-              v.eta !== null
-          );
+          active[0] ?? null;
 
         if (next) {
           console.log(
-            `  PR�XIMO: ${next.vehicleId} ? ${formatMinutes(next.eta)}`
+            `  PRÓXIMO: ${next.vehicleId} → ${next.remaining.toFixed(0)} m`
+          );
+
+          console.log(
+            `  ETA: ${next.eta === null
+              ? 'indeterminado'
+              : formatMinutes(next.eta)
+            }`
           );
         } else {
           console.log(
-            '  PR�XIMO: a recolher velocidade...'
+            '  Nenhum 749 encontrado no realtime neste sentido.'
           );
         }
 
@@ -1470,17 +1583,15 @@ async function main() {
           const vehicle of active
         ) {
           console.log(
-            `    ${vehicle.vehicleId} | ${vehicle.remaining.toFixed(0)} m | ${
-              vehicle.averageSpeed === null
-                ? 'sem velocidade'
-                : vehicle.averageSpeed.toFixed(1) +
-                  ' km/h'
-            } | ETA ${
-              vehicle.eta === null
-                ? '�'
-                : formatMinutes(
-                    vehicle.eta
-                  )
+            `    ${vehicle.vehicleId} | ${vehicle.remaining.toFixed(0)} m | ${vehicle.averageSpeed === null
+              ? 'sem velocidade'
+              : vehicle.averageSpeed.toFixed(1) +
+              ' km/h'
+            } | ETA ${vehicle.eta === null
+              ? '�'
+              : formatMinutes(
+                vehicle.eta
+              )
             }`
           );
         }
@@ -1504,7 +1615,7 @@ async function main() {
       Math.max(
         0,
         POLL_INTERVAL_MS -
-          elapsed
+        elapsed
       );
 
     await new Promise(
