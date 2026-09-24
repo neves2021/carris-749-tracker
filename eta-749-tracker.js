@@ -1370,7 +1370,6 @@ function buildStatus(
 
         lastPassed:
           recentLastPassed,
-
         vehicles: vehicles.map(vehicle => ({
           vehicleId: vehicle.vehicleId,
           licensePlate:
@@ -1380,7 +1379,11 @@ function buildStatus(
           etaSeconds: vehicle.eta,
           remainingMeters: vehicle.remaining,
           averageSpeedKmh: vehicle.averageSpeed,
-          timestamp: vehicle.timestamp
+          timestamp: vehicle.timestamp,
+          scheduledDepartureTime:
+            vehicle.scheduledDepartureTime,
+          scheduledTargetArrivalTime:
+            vehicle.scheduledTargetArrivalTime
         }))
       };
     })
@@ -1586,7 +1589,11 @@ function startWebServer(getStatus) {
           '"<div class=\\"route\\"><strong>"+t.routeShortName+"</strong> · "+t.name+" → "+t.destination+"</div>"+',
           'vehicleHtml(n,true,d.updatedAt)+',
           'schedule+',
-          '(others.length ? "<div class=\\"others-title\\">OUTROS "+t.routeShortName+"</div>"+others.map(function(v){return vehicleHtml(v,false,d.updatedAt);}).join("") : "")+', '"</div>";',
+          '(others.length ? "<div class=\\"others-title\\">OUTROS "+t.routeShortName+"</div>"+',
+          'others.map(function(v){',
+          'return vehicleHtml(v,false,d.updatedAt)+scheduleInfo(v,t);',
+          '}).join("") : "")+',
+          '"</div>";',
           '}).join("");',
           '}catch(e){',
           'console.error(e);',
