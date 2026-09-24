@@ -9,20 +9,39 @@ const GTFS_URL =
 const RT_URL =
   'https://gateway.carris.pt/gateway/gtfs/api/v2.11/GTFS/realtime/vehiclepositions';
 
-const ROUTE_ID = '195_0';
+const ROUTES = [
+  {
+    routeId: '195_0',
+    shortName: '749'
+  },
+  {
+    routeId: '110_0',
+    shortName: '765'
+  }
+];
 
 const TARGETS = [
   {
-    id: 'qta-freiras',
+    id: '749-qta-freiras',
+    routeId: '195_0',
     name: 'Qta. das Freiras',
     stopId: '3314',
     destination: 'Benfica'
   },
   {
-    id: 'charquinho',
+    id: '749-charquinho',
+    routeId: '195_0',
     name: 'Charquinho',
     stopId: '13705',
     destination: 'ISEL'
+  },
+  {
+    id: '765-charquinho',
+    routeId: '110_0',
+    directionId: '1',
+    name: 'Charquinho',
+    stopId: '13705',
+    destination: 'Colégio Militar (Metro)'
   }
 ];
 
@@ -269,7 +288,8 @@ async function prepareData() {
   // ROUTES
   // ==========================
 
-  let route = null;
+  const routesById =
+    new Map();
 
   let routeIdIndex = -1;
   let routeShortNameIndex = -1;
@@ -295,24 +315,48 @@ async function prepareData() {
     },
 
     row => {
-      if (
-        row[routeIdIndex] === ROUTE_ID &&
-        row[routeShortNameIndex] === '749'
-      ) {
-        route = row;
+      const routeId =
+        row[routeIdIndex];
+
+      const routeConfig =
+        ROUTES.find(
+          route =>
+            route.routeId === routeId &&
+            route.shortName ===
+            row[routeShortNameIndex]
+        );
+
+      if (!routeConfig) {
+        return;
       }
+
+      routesById.set(
+        routeId,
+        {
+          routeId,
+          shortName:
+            row[routeShortNameIndex],
+          longName:
+            row[routeLongNameIndex]
+        }
+      );
     }
   );
 
-  if (!route) {
-    throw new Error(
-      'Rota 749 não encontrada.'
+  for (const route of routesById.values()) {
+    console.log(
+      `Rota: ${route.shortName} — ${route.longName}`
     );
   }
 
-  console.log(
-    `Rota: ${route[routeShortNameIndex]} — ${route[routeLongNameIndex]}`
-  );
+  if (
+    routesById.size !==
+    ROUTES.length
+  ) {
+    throw new Error(
+      'Nem todas as rotas configuradas foram encontradas no GTFS.'
+    );
+  }
 
   // ==========================
   // TRIPS
@@ -346,8 +390,9 @@ async function prepareData() {
 
     row => {
       if (
-        row[tripRouteIndex] !==
-        ROUTE_ID
+        !routesById.has(
+          row[tripRouteIndex]
+        )
       ) {
         return;
       }
@@ -360,6 +405,9 @@ async function prepareData() {
         {
           tripId,
 
+          routeId:
+            row[tripRouteIndex],
+
           shapeId:
             row[shapeIdIndex],
 
@@ -371,7 +419,7 @@ async function prepareData() {
   );
 
   console.log(
-    `Trips da rota 749: ${routeTrips.size}`
+    `Trips das rotas configuradas: ${routeTrips.size}`
   );
 
   // ==========================
@@ -413,7 +461,7 @@ async function prepareData() {
         row[stTripIdIndex];
 
       // Ignorar imediatamente todos
-      // os trips que não são da 749.
+      // os trips que não pertencem às rotas configuradas.
       if (
         !routeTrips.has(tripId)
       ) {
@@ -509,7 +557,7 @@ async function prepareData() {
         row[stopIdIndex];
 
       // Ignorar todas as paragens
-      // que não pertencem à 749.
+      // que não pertencem às rotas configuradas.
       if (
         !requiredStopIds.has(
           stopId
@@ -596,7 +644,7 @@ async function prepareData() {
         row[shapeIdColumn];
 
       // Ignorar imediatamente shapes
-      // que não pertencem à 749.
+      // que não pertencem às rotas configuradas.
       if (
         !requiredShapeIds.has(
           shapeId
@@ -664,6 +712,28 @@ async function prepareData() {
         stops
       ] of stopTimesByTrip
     ) {
+      const trip =
+        routeTrips.get(tripId);
+
+      if (!trip) {
+        continue;
+      }
+
+      if (
+        target.routeId !==
+        trip.routeId
+      ) {
+        continue;
+      }
+
+      if (
+        target.directionId != null &&
+        target.directionId !==
+        trip.directionId
+      ) {
+        continue;
+      }
+
       const targetStop =
         stops.find(
           stop =>
@@ -1212,6 +1282,12 @@ function buildStatus(tracker, currentKeys) {
 
       return {
         id: target.id,
+        routeShortName:
+          ROUTES.find(
+            route =>
+              route.routeId ===
+              target.routeId
+          )?.shortName ?? target.routeId,
         name: target.name,
         destination: target.destination,
 
@@ -1275,22 +1351,40 @@ function startWebServer(getStatus) {
           '<head>',
           '<meta charset="utf-8">',
           '<meta name="viewport" content="width=device-width,initial-scale=1">',
-          '<title>749 — Monitor</title>',
+          '<title>Monitor de autocarros</title>',
           '<style>',
-          'body{font-family:system-ui,sans-serif;margin:0;padding:20px;background:#f5f5f5;color:#111}',
-          'main{max-width:520px;margin:auto}',
-          'h1{font-size:28px;margin:0 0 20px}',
-          '.card{background:white;border-radius:16px;padding:18px;margin-bottom:16px;box-shadow:0 2px 8px #0001}',
-          '.route{font-size:15px;color:#555;margin-bottom:8px}',
-          '.eta{font-size:42px;font-weight:700;margin:8px 0}',
-          '.meta{font-size:15px;line-height:1.7}',
-          '.small{color:#777;font-size:13px;margin-top:14px}',
-          '.none{font-size:18px;color:#777}',
+          '*{box-sizing:border-box}',
+          'body{font-family:system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:0;padding:24px 16px 40px;background:#f1f3f5;color:#17202a}',
+          'main{max-width:560px;margin:0 auto}',
+          'h1{font-size:28px;line-height:1.2;margin:0 0 24px;letter-spacing:-.5px}',
+          '.card{background:#fff;border:1px solid #e5e7eb;border-radius:18px;padding:18px;margin-bottom:16px;box-shadow:0 3px 12px rgba(0,0,0,.06)}',
+          '.route{font-size:15px;font-weight:500;color:#4b5563;margin-bottom:14px}',
+          '.route strong{color:#111827;font-weight:750}',
+          '.vehicle{border:1px solid #e5e7eb;border-radius:14px;padding:16px;background:#fafafa}',
+          '.vehicle.next{background:#fff;border-color:#d7dce2}',
+          '.vehicle-header{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:12px}',
+          '.vehicle-id{font-size:24px;font-weight:800;letter-spacing:-.5px}',
+          '.badge{font-size:11px;font-weight:800;letter-spacing:.5px;padding:5px 8px;border-radius:999px;background:#e8f1ff;color:#2457a6;white-space:nowrap}',
+          '.vehicle-stop{font-size:17px;font-weight:650;margin-bottom:2px}',
+          '.vehicle-stop-label{font-size:12px;color:#6b7280;margin-bottom:16px}',
+          '.vehicle-main{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px}',
+          '.metric{background:#f3f4f6;border-radius:12px;padding:12px}',
+          '.metric-label{font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:#6b7280;margin-bottom:3px}',
+          '.metric-value{font-size:25px;font-weight:750;line-height:1.2}',
+          '.vehicle-details{display:grid;grid-template-columns:1fr 1fr;gap:6px 16px;padding-top:12px;border-top:1px solid #e5e7eb;font-size:13px;color:#4b5563}',
+          '.detail strong{color:#17202a;font-weight:650}',
+          '.updated{font-size:12px;color:#8a919a;margin-top:12px;text-align:right}',
+          '.none{padding:18px 4px 10px;text-align:center;color:#6b7280;font-size:14px;line-height:1.6}',
+          '.none strong{display:block;color:#374151;font-size:15px;margin-bottom:2px}',
+          '.others-title{font-size:11px;font-weight:800;letter-spacing:.7px;color:#8a919a;margin:16px 2px 8px}',
+          '.other-vehicle{margin-top:8px}',
+          '.error{color:#b42318}',
+          '@media (max-width:420px){.metric-value{font-size:22px}.vehicle-details{grid-template-columns:1fr}}',
           '</style>',
           '</head>',
           '<body>',
           '<main>',
-          '<h1>749</h1>',
+          '<h1>Monitor de autocarros</h1>',
           '<div id="app">A carregar...</div>',
           '</main>',
           '<script>',
@@ -1303,18 +1397,39 @@ function startWebServer(getStatus) {
           'if(seconds===0)return minutes+"m";',
           'return minutes+"m "+seconds+"s";',
           '}',
-          'function vehicleHtml(v,isNext){',
+          'function fmtTime(iso){',
+          'if(!iso)return "hora desconhecida";',
+          'const date=new Date(iso);',
+          'return date.toLocaleTimeString("pt-PT",{',
+          'hour:"2-digit",',
+          'minute:"2-digit",',
+          'second:"2-digit"',
+          '});',
+          '}',
+          'function vehicleHtml(v,isNext,updatedAt){',
+          'const speed=v.averageSpeedKmh==null?"a calcular":v.averageSpeedKmh.toFixed(1)+" km/h";',
           'return "<div class=\\"vehicle "+(isNext?"next":"")+"\\">"+',
           '"<div class=\\"vehicle-header\\">"+',
           '"<span class=\\"vehicle-id\\">"+v.vehicleId+"</span>"+',
           '(isNext?"<span class=\\"badge\\">PRÓXIMO</span>":"")+',
           '"</div>"+',
           '"<div class=\\"vehicle-stop\\">"+(v.currentStopName||"Localização desconhecida")+"</div>"+',
-          '"<div class=\\"vehicle-plate\\">Matrícula: "+(v.licensePlate||"Desconhecida")+"</div>"+',
-          '"<div class=\\"vehicle-distance\\">"+Math.round(v.remainingMeters)+" m</div>"+',
-          '"<div class=\\"vehicle-meta\\">ETA: "+fmtEta(v.etaSeconds)+" · "+',
-          '(v.averageSpeedKmh==null?"velocidade a calcular":v.averageSpeedKmh.toFixed(1)+" km/h")+',
+          '"<div class=\\"vehicle-stop-label\\">Paragem atual</div>"+',
+          '"<div class=\\"vehicle-main\\">"+',
+          '"<div class=\\"metric\\">"+',
+          '"<div class=\\"metric-label\\">Distância</div>"+',
+          '"<div class=\\"metric-value\\">"+Math.round(v.remainingMeters)+" m</div>"+',
           '"</div>"+',
+          '"<div class=\\"metric\\">"+',
+          '"<div class=\\"metric-label\\">ETA</div>"+',
+          '"<div class=\\"metric-value\\">"+fmtEta(v.etaSeconds)+"</div>"+',
+          '"</div>"+',
+          '"</div>"+',
+          '"<div class=\\"vehicle-details\\">"+',
+          '"<div class=\\"detail\\">Matrícula: <strong>"+(v.licensePlate||"Desconhecida")+"</strong></div>"+',
+          '"<div class=\\"detail\\">Velocidade: <strong>"+speed+"</strong></div>"+',
+          '"</div>"+',
+          '"<div class=\\"updated\\">Informação obtida às "+fmtTime(updatedAt)+"</div>"+',
           '"</div>";',
           '}',
           'async function refresh(){',
@@ -1327,16 +1442,15 @@ function startWebServer(getStatus) {
           'const n=t.next;',
           'if(!n){',
           'return "<div class=\\"card\\">"+',
-          '"<div class=\\"route\\">"+t.name+" → "+t.destination+"</div>"+',
-          '"<div class=\\"none\\"><strong>Sem 749 a caminho neste momento</strong><br>A aguardar o próximo veículo.</div>"+',
+          '"<div class=\\"route\\"><strong>"+t.routeShortName+"</strong> · "+t.name+" → "+t.destination+"</div>"+',
+          '"<div class=\\"none\\"><strong>Sem "+t.routeShortName+" a caminho neste momento</strong><br>A aguardar o próximo veículo.</div>"+',
           '"</div>";',
           '}',
           'const others=vehicles.slice(1);',
           'return "<div class=\\"card\\">"+',
-          '"<div class=\\"route\\">"+t.name+" → "+t.destination+"</div>"+',
-          'vehicleHtml(n,true)+',
-          '(others.length ? "<div class=\\"others-title\\">OUTROS 749</div>"+others.map(function(v){return vehicleHtml(v,false);}).join("") : "")+',
-          '"</div>";',
+          '"<div class=\\"route\\"><strong>"+t.routeShortName+"</strong> · "+t.name+" → "+t.destination+"</div>"+',
+          'vehicleHtml(n,true,d.updatedAt)+',
+          '(others.length ? "<div class=\\"others-title\\">OUTROS "+t.routeShortName+"</div>"+others.map(function(v){return vehicleHtml(v,false,d.updatedAt);}).join("") : "")+', '"</div>";',
           '}).join("");',
           '}catch(e){',
           'console.error(e);',
@@ -1412,7 +1526,7 @@ async function main() {
   );
 
   console.log(
-    '749 � MONITOR DE PARAGENS'
+    'AUTOCARROS — MONITOR DE PARAGENS'
   );
 
   console.log(
@@ -1420,11 +1534,15 @@ async function main() {
   );
 
   console.log(
-    '  Qta. das Freiras ? Benfica'
+    '  749 | Qta. das Freiras → Benfica'
   );
 
   console.log(
-    '  Charquinho ? ISEL'
+    '  749 | Charquinho → ISEL'
+  );
+
+  console.log(
+    '  765 | Charquinho → Colégio Militar (Metro)'
   );
 
   console.log(
