@@ -435,6 +435,8 @@ async function prepareData() {
   let stStopIdIndex = -1;
   let stSequenceIndex = -1;
   let stShapeDistIndex = -1;
+  let stArrivalTimeIndex = -1;
+  let stDepartureTimeIndex = -1;
 
   processCsv(
     zip,
@@ -455,6 +457,16 @@ async function prepareData() {
       stShapeDistIndex =
         header.indexOf(
           'shape_dist_traveled'
+        );
+
+      stArrivalTimeIndex =
+        header.indexOf(
+          'arrival_time'
+        );
+
+      stDepartureTimeIndex =
+        header.indexOf(
+          'departure_time'
         );
     },
 
@@ -493,7 +505,13 @@ async function prepareData() {
           shapeDist:
             Number(
               row[stShapeDistIndex]
-            )
+            ),
+
+          arrivalTime:
+            row[stArrivalTimeIndex],
+
+          departureTime:
+            row[stDepartureTimeIndex]
         });
     }
   );
@@ -708,12 +726,10 @@ async function prepareData() {
     new Map();
 
   for (const target of TARGETS) {
-    for (
-      const [
-        tripId,
-        stops
-      ] of stopTimesByTrip
-    ) {
+    for (const [
+      tripId,
+      stops
+    ] of stopTimesByTrip) {
       const trip =
         routeTrips.get(tripId);
 
@@ -747,11 +763,16 @@ async function prepareData() {
         continue;
       }
 
-      if (
-        !targetsByTrip.has(
-          tripId
-        )
-      ) {
+      const firstStop =
+        stops.reduce(
+          (first, stop) =>
+            stop.sequence <
+              first.sequence
+              ? stop
+              : first
+        );
+
+      if (!targetsByTrip.has(tripId)) {
         targetsByTrip.set(
           tripId,
           []
@@ -761,23 +782,20 @@ async function prepareData() {
       targetsByTrip
         .get(tripId)
         .push({
-          targetId:
-            target.id,
-
-          targetName:
-            target.name,
-
-          destination:
-            target.destination,
-
-          stopId:
-            target.stopId,
-
+          targetId: target.id,
+          targetName: target.name,
+          destination: target.destination,
+          stopId: target.stopId,
           stopSequence:
             targetStop.sequence,
-
           targetShapeDist:
-            targetStop.shapeDist
+            targetStop.shapeDist,
+
+          scheduledDepartureTime:
+            firstStop.departureTime,
+
+          scheduledTargetArrivalTime:
+            targetStop.arrivalTime
         });
     }
   }
@@ -1011,6 +1029,12 @@ async function getVehicles(data) {
 
         targetId:
           target.targetId,
+
+        scheduledDepartureTime:
+          target.scheduledDepartureTime,
+
+        scheduledTargetArrivalTime:
+          target.scheduledTargetArrivalTime,
 
         targetName:
           target.targetName,
@@ -1334,7 +1358,13 @@ function buildStatus(
             etaSeconds: next.eta,
             remainingMeters: next.remaining,
             averageSpeedKmh: next.averageSpeed,
-            timestamp: next.timestamp
+            timestamp: next.timestamp,
+
+            scheduledDepartureTime:
+              next.scheduledDepartureTime,
+
+            scheduledTargetArrivalTime:
+              next.scheduledTargetArrivalTime
           }
           : null,
 
@@ -1412,6 +1442,7 @@ function startWebServer(getStatus) {
           '.updated{font-size:12px;color:#8a919a;margin-top:12px;text-align:right}',
           '.none{padding:18px 4px 10px;text-align:center;color:#6b7280;font-size:14px;line-height:1.6}',
           '.last-passed{margin-top:10px;font-size:13px;color:#6b7280}',
+          '.schedule{margin-top:10px;font-size:13px;color:#6b7280;line-height:1.6}',
           '.none strong{display:block;color:#374151;font-size:15px;margin-bottom:2px}',
           '.others-title{font-size:11px;font-weight:800;letter-spacing:.7px;color:#8a919a;margin:16px 2px 8px}',
           '.other-vehicle{margin-top:8px}',
@@ -1451,6 +1482,58 @@ function startWebServer(getStatus) {
           'if(minutes<60)return minutes+" min";',
           'const hours=Math.floor(minutes/60);',
           'return hours+" h";',
+          '}',
+          'function fmtScheduledTime(time) {',
+          'if(!time)return null;',
+          'const parts=time.split(":");',
+          'if(parts.length<2)return time;',
+          'return parts[0]+":"+parts[1];',
+          '}',
+          'function scheduleInfo(n,t){',
+          'const departure=n.scheduledDepartureTime;',
+          'const arrival=n.scheduledTargetArrivalTime;',
+          'if(!arrival)return "";',
+          'const now=new Date();',
+          'const datePart=now.toISOString().slice(0,10);',
+          'const arrivalDate=new Date(',
+          'datePart+"T"+arrival',
+          ');',
+          'const departureDate=departure',
+          '?new Date(',
+          'datePart+"T"+departure',
+          ')',
+          ':null;',
+          'let html="";',
+          'if(departureDate && now>=departureDate){',
+          'html+="<div>Partida prevista da paragem inicial às <strong>"+',
+          'fmtScheduledTime(departure)+',
+          '"</strong></div>";',
+          '}else if(departure){',
+          'html+="<div>Partida prevista da paragem inicial às <strong>"+',
+          'fmtScheduledTime(departure)+',
+          '"</strong></div>";',
+          '}',
+          'if(now>=arrivalDate){',
+          'const delayMinutes=Math.floor(',
+          '(now-arrivalDate)/60000',
+          ');',
+          'html+="<div>Devia ter passado na <strong>"+',
+          't.name+',
+          '"</strong> às <strong>"+',
+          'fmtScheduledTime(arrival)+',
+          '"</strong>. Atraso: <strong>"+',
+          'delayMinutes+',
+          '" min</strong></div>";',
+          '}else{',
+          'html+="<div>Deverá passar na <strong>"+',
+          't.name+',
+          '"</strong> às <strong>"+',
+          'fmtScheduledTime(arrival)+',
+          '"</strong></div>";',
+          '}',
+          'return "<div class=\\"schedule\\">"+',
+          'html+',
+          '"</div>";',
           '}',
           'function vehicleHtml(v,isNext,updatedAt){',
           'const speed=v.averageSpeedKmh==null?"a calcular":v.averageSpeedKmh.toFixed(1)+" km/h";',
@@ -1497,10 +1580,12 @@ function startWebServer(getStatus) {
           '"<div class=\\"none\\"><strong>Sem "+t.routeShortName+" a caminho neste momento</strong><br>A aguardar o próximo veículo."+lastPassedHtml+"</div>"+',
           '"</div>";',
           '}',
+          'const schedule=scheduleInfo(n,t);',
           'const others=vehicles.slice(1);',
           'return "<div class=\\"card\\">"+',
           '"<div class=\\"route\\"><strong>"+t.routeShortName+"</strong> · "+t.name+" → "+t.destination+"</div>"+',
           'vehicleHtml(n,true,d.updatedAt)+',
+          'schedule+',
           '(others.length ? "<div class=\\"others-title\\">OUTROS "+t.routeShortName+"</div>"+others.map(function(v){return vehicleHtml(v,false,d.updatedAt);}).join("") : "")+', '"</div>";',
           '}).join("");',
           '}catch(e){',
