@@ -121,24 +121,100 @@ function matchGpsToShape(gps, shape) {
 // CSV / GTFS
 // ==========================
 
-function readCsv(zip, filename) {
-  const text =
+function parseCsvLine(line) {
+  const fields = [];
+
+  let field = '';
+  let inQuotes = false;
+
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+
+    if (char === '"') {
+      if (
+        inQuotes &&
+        line[i + 1] === '"'
+      ) {
+        field += '"';
+        i++;
+      } else {
+        inQuotes = !inQuotes;
+      }
+
+      continue;
+    }
+
+    if (
+      char === ',' &&
+      !inQuotes
+    ) {
+      fields.push(field);
+      field = '';
+      continue;
+    }
+
+    field += char;
+  }
+
+  fields.push(field);
+
+  return fields;
+}
+
+function processCsv(zip, filename, onHeader, onRow) {
+  let text =
     zip.readAsText(filename);
 
-  const lines =
-    text
-      .split(/\r?\n/)
-      .filter(Boolean);
+  let header = null;
+  let start = 0;
 
-  const header =
-    lines[0].split(',');
+  for (
+    let i = 0;
+    i <= text.length;
+    i++
+  ) {
+    const endOfLine =
+      i === text.length ||
+      text.charCodeAt(i) === 10;
 
-  return {
-    header,
-    rows: lines.slice(1).map(
-      line => line.split(',')
-    )
-  };
+    if (!endOfLine) {
+      continue;
+    }
+
+    let line =
+      text.slice(start, i);
+
+    if (line.endsWith('\r')) {
+      line =
+        line.slice(0, -1);
+    }
+
+    start = i + 1;
+
+    if (!line) {
+      continue;
+    }
+
+    if (!header) {
+      header =
+        parseCsvLine(line);
+
+      if (onHeader) {
+        onHeader(header);
+      }
+
+      continue;
+    }
+
+    onRow(
+      parseCsvLine(line)
+    );
+  }
+
+  // Permitir que o texto gigante
+  // fique elegível para GC assim que
+  // terminarmos de processar o ficheiro.
+  text = null;
 }
 
 async function loadGTFS() {
@@ -193,143 +269,184 @@ async function prepareData() {
   // ROUTES
   // ==========================
 
-  const routes =
-    readCsv(zip, 'routes.txt');
+  let route = null;
 
-  const routeIdIndex =
-    routes.header.indexOf('route_id');
+  let routeIdIndex = -1;
+  let routeShortNameIndex = -1;
+  let routeLongNameIndex = -1;
 
-  const routeShortNameIndex =
-    routes.header.indexOf('route_short_name');
+  processCsv(
+    zip,
+    'routes.txt',
 
-  const routeLongNameIndex =
-    routes.header.indexOf('route_long_name');
+    header => {
+      routeIdIndex =
+        header.indexOf('route_id');
 
-  const route =
-    routes.rows.find(row =>
-      row[routeIdIndex] === ROUTE_ID &&
-      row[routeShortNameIndex] === '749'
-    );
+      routeShortNameIndex =
+        header.indexOf(
+          'route_short_name'
+        );
+
+      routeLongNameIndex =
+        header.indexOf(
+          'route_long_name'
+        );
+    },
+
+    row => {
+      if (
+        row[routeIdIndex] === ROUTE_ID &&
+        row[routeShortNameIndex] === '749'
+      ) {
+        route = row;
+      }
+    }
+  );
 
   if (!route) {
     throw new Error(
-      'Rota 749 n�o encontrada.'
+      'Rota 749 não encontrada.'
     );
   }
 
   console.log(
-    `Rota: ${route[routeShortNameIndex]} � ${route[routeLongNameIndex]}`
+    `Rota: ${route[routeShortNameIndex]} — ${route[routeLongNameIndex]}`
   );
 
   // ==========================
   // TRIPS
   // ==========================
 
-  let trips =
-    readCsv(zip, 'trips.txt');
-
-  const tripRouteIndex =
-    trips.header.indexOf('route_id');
-
-  const tripIdIndex =
-    trips.header.indexOf('trip_id');
-
-  const shapeIdIndex =
-    trips.header.indexOf('shape_id');
-
-  const directionIdIndex =
-    trips.header.indexOf('direction_id');
-
   const routeTrips =
     new Map();
 
-  for (const row of trips.rows) {
-    if (
-      row[tripRouteIndex] !==
-      ROUTE_ID
-    ) {
-      continue;
-    }
+  let tripRouteIndex = -1;
+  let tripIdIndex = -1;
+  let shapeIdIndex = -1;
+  let directionIdIndex = -1;
 
-    routeTrips.set(
-      row[tripIdIndex],
-      {
-        tripId:
-          row[tripIdIndex],
+  processCsv(
+    zip,
+    'trips.txt',
 
-        shapeId:
-          row[shapeIdIndex],
+    header => {
+      tripRouteIndex =
+        header.indexOf('route_id');
 
-        directionId:
-          row[directionIdIndex]
+      tripIdIndex =
+        header.indexOf('trip_id');
+
+      shapeIdIndex =
+        header.indexOf('shape_id');
+
+      directionIdIndex =
+        header.indexOf('direction_id');
+    },
+
+    row => {
+      if (
+        row[tripRouteIndex] !==
+        ROUTE_ID
+      ) {
+        return;
       }
-    );
-  }
 
-  trips = null;
+      const tripId =
+        row[tripIdIndex];
+
+      routeTrips.set(
+        tripId,
+        {
+          tripId,
+
+          shapeId:
+            row[shapeIdIndex],
+
+          directionId:
+            row[directionIdIndex]
+        }
+      );
+    }
+  );
+
+  console.log(
+    `Trips da rota 749: ${routeTrips.size}`
+  );
 
   // ==========================
   // STOP TIMES
   // ==========================
 
-  let stopTimes =
-    readCsv(zip, 'stop_times.txt');
-
-  const stTripIdIndex =
-    stopTimes.header.indexOf('trip_id');
-
-  const stStopIdIndex =
-    stopTimes.header.indexOf('stop_id');
-
-  const stSequenceIndex =
-    stopTimes.header.indexOf(
-      'stop_sequence'
-    );
-
-  const stShapeDistIndex =
-    stopTimes.header.indexOf(
-      'shape_dist_traveled'
-    );
-
   const stopTimesByTrip =
     new Map();
 
-  for (const row of stopTimes.rows) {
-    const tripId =
-      row[stTripIdIndex];
+  let stTripIdIndex = -1;
+  let stStopIdIndex = -1;
+  let stSequenceIndex = -1;
+  let stShapeDistIndex = -1;
 
-    if (
-      !routeTrips.has(tripId)
-    ) {
-      continue;
+  processCsv(
+    zip,
+    'stop_times.txt',
+
+    header => {
+      stTripIdIndex =
+        header.indexOf('trip_id');
+
+      stStopIdIndex =
+        header.indexOf('stop_id');
+
+      stSequenceIndex =
+        header.indexOf(
+          'stop_sequence'
+        );
+
+      stShapeDistIndex =
+        header.indexOf(
+          'shape_dist_traveled'
+        );
+    },
+
+    row => {
+      const tripId =
+        row[stTripIdIndex];
+
+      // Ignorar imediatamente todos
+      // os trips que não são da 749.
+      if (
+        !routeTrips.has(tripId)
+      ) {
+        return;
+      }
+
+      if (
+        !stopTimesByTrip.has(tripId)
+      ) {
+        stopTimesByTrip.set(
+          tripId,
+          []
+        );
+      }
+
+      stopTimesByTrip
+        .get(tripId)
+        .push({
+          stopId:
+            row[stStopIdIndex],
+
+          sequence:
+            Number(
+              row[stSequenceIndex]
+            ),
+
+          shapeDist:
+            Number(
+              row[stShapeDistIndex]
+            )
+        });
     }
-
-    if (
-      !stopTimesByTrip.has(tripId)
-    ) {
-      stopTimesByTrip.set(
-        tripId,
-        []
-      );
-    }
-
-    stopTimesByTrip
-      .get(tripId)
-      .push({
-        stopId:
-          row[stStopIdIndex],
-
-        sequence:
-          Number(
-            row[stSequenceIndex]
-          ),
-
-        shapeDist:
-          Number(
-            row[stShapeDistIndex]
-          )
-      });
-  }
+  );
 
   for (
     const stops of
@@ -341,94 +458,65 @@ async function prepareData() {
     );
   }
 
-  stopTimes = null;
+  console.log(
+    `Trips com stop_times: ${stopTimesByTrip.size}`
+  );
 
   // ==========================
   // STOPS
   // ==========================
 
-  let stops =
-    readCsv(zip, 'stops.txt');
-
-  const stopIdIndex =
-    stops.header.indexOf(
-      'stop_id'
-    );
-
-  const stopNameIndex =
-    stops.header.indexOf(
-      'stop_name'
+  const requiredStopIds =
+    new Set(
+      TARGETS.map(
+        target => target.stopId
+      )
     );
 
   const stopNames =
     new Map();
 
-  const requiredStopIds =
-    new Set();
+  let stopIdIndex = -1;
+  let stopNameIndex = -1;
 
-  for (
-    const stops of
-    stopTimesByTrip.values()
-  ) {
-    for (const stop of stops) {
-      requiredStopIds.add(
-        stop.stopId
+  processCsv(
+    zip,
+    'stops.txt',
+
+    header => {
+      stopIdIndex =
+        header.indexOf(
+          'stop_id'
+        );
+
+      stopNameIndex =
+        header.indexOf(
+          'stop_name'
+        );
+    },
+
+    row => {
+      const stopId =
+        row[stopIdIndex];
+
+      if (
+        !requiredStopIds.has(
+          stopId
+        )
+      ) {
+        return;
+      }
+
+      stopNames.set(
+        stopId,
+        row[stopNameIndex]
       );
     }
-  }
-
-  for (const row of stops.rows) {
-    const stopId =
-      row[stopIdIndex];
-
-    if (
-      !requiredStopIds.has(stopId)
-    ) {
-      continue;
-    }
-
-    stopNames.set(
-      stopId,
-      row[stopNameIndex]
-    );
-  }
-
-  stops = null;
+  );
 
   // ==========================
   // SHAPES
   // ==========================
-
-  let shapes =
-    readCsv(zip, 'shapes.txt');
-
-  const shapeIdColumn =
-    shapes.header.indexOf(
-      'shape_id'
-    );
-
-  const shapeLatIndex =
-    shapes.header.indexOf(
-      'shape_pt_lat'
-    );
-
-  const shapeLonIndex =
-    shapes.header.indexOf(
-      'shape_pt_lon'
-    );
-
-  const shapeSeqIndex =
-    shapes.header.indexOf(
-      'shape_pt_sequence'
-    );
-
-  const shapeDistIndex =
-    shapes.header.indexOf(
-      'shape_dist_traveled'
-    );
-
-  const shapesById =
-    new Map();
 
   const requiredShapeIds =
     new Set();
@@ -437,54 +525,105 @@ async function prepareData() {
     const trip of
     routeTrips.values()
   ) {
-    requiredShapeIds.add(
-      trip.shapeId
-    );
-  }
-
-  for (const row of shapes.rows) {
-    const shapeId =
-      row[shapeIdColumn];
-
-    if (
-      !requiredShapeIds.has(shapeId)
-    ) {
-      continue;
-    }
-
-    if (
-      !shapesById.has(shapeId)
-    ) {
-      shapesById.set(
-        shapeId,
-        []
+    if (trip.shapeId) {
+      requiredShapeIds.add(
+        trip.shapeId
       );
     }
-
-    shapesById
-      .get(shapeId)
-      .push({
-        seq:
-          Number(
-            row[shapeSeqIndex]
-          ),
-
-        lat:
-          Number(
-            row[shapeLatIndex]
-          ),
-
-        lon:
-          Number(
-            row[shapeLonIndex]
-          ),
-
-        shapeDist:
-          Number(
-            row[shapeDistIndex]
-          )
-      });
   }
+
+  console.log(
+    `Shapes necessárias: ${requiredShapeIds.size}`
+  );
+
+  const shapesById =
+    new Map();
+
+  let shapeIdColumn = -1;
+  let shapeLatIndex = -1;
+  let shapeLonIndex = -1;
+  let shapeSeqIndex = -1;
+  let shapeDistIndex = -1;
+
+  processCsv(
+    zip,
+    'shapes.txt',
+
+    header => {
+      shapeIdColumn =
+        header.indexOf(
+          'shape_id'
+        );
+
+      shapeLatIndex =
+        header.indexOf(
+          'shape_pt_lat'
+        );
+
+      shapeLonIndex =
+        header.indexOf(
+          'shape_pt_lon'
+        );
+
+      shapeSeqIndex =
+        header.indexOf(
+          'shape_pt_sequence'
+        );
+
+      shapeDistIndex =
+        header.indexOf(
+          'shape_dist_traveled'
+        );
+    },
+
+    row => {
+      const shapeId =
+        row[shapeIdColumn];
+
+      // Ignorar imediatamente shapes
+      // que não pertencem à 749.
+      if (
+        !requiredShapeIds.has(
+          shapeId
+        )
+      ) {
+        return;
+      }
+
+      if (
+        !shapesById.has(shapeId)
+      ) {
+        shapesById.set(
+          shapeId,
+          []
+        );
+      }
+
+      shapesById
+        .get(shapeId)
+        .push({
+          seq:
+            Number(
+              row[shapeSeqIndex]
+            ),
+
+          lat:
+            Number(
+              row[shapeLatIndex]
+            ),
+
+          lon:
+            Number(
+              row[shapeLonIndex]
+            ),
+
+          shapeDist:
+            Number(
+              row[shapeDistIndex]
+            )
+        });
+    }
+  );
 
   for (
     const shape of
@@ -495,8 +634,6 @@ async function prepareData() {
         a.seq - b.seq
     );
   }
-
-  shapes = null;
 
   // ==========================
   // TARGETS POR TRIP
@@ -524,7 +661,9 @@ async function prepareData() {
       }
 
       if (
-        !targetsByTrip.has(tripId)
+        !targetsByTrip.has(
+          tripId
+        )
       ) {
         targetsByTrip.set(
           tripId,
@@ -556,23 +695,36 @@ async function prepareData() {
     }
   }
 
-  console.log('\nTargets configurados:');
+  console.log(
+    '\nTargets configurados:'
+  );
 
   for (const target of TARGETS) {
-    const count =
-      [...targetsByTrip.values()]
-        .filter(targets =>
-          targets.some(
-            t =>
-              t.targetId ===
-              target.id
-          )
-        ).length;
+    let count = 0;
+
+    for (
+      const targets of
+      targetsByTrip.values()
+    ) {
+      if (
+        targets.some(
+          t =>
+            t.targetId ===
+            target.id
+        )
+      ) {
+        count++;
+      }
+    }
 
     console.log(
-      `  ${target.name} ? ${target.destination}: ${count} trips`
+      `  ${target.name} → ${target.destination}: ${count} trips`
     );
   }
+
+  console.log(
+    `Shapes carregadas: ${shapesById.size}`
+  );
 
   return {
     routeTrips,
