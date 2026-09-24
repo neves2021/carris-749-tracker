@@ -466,12 +466,21 @@ async function prepareData() {
   // STOPS
   // ==========================
 
+  // Recolher apenas as paragens que
+  // pertencem aos trips da 749.
   const requiredStopIds =
-    new Set(
-      TARGETS.map(
-        target => target.stopId
-      )
-    );
+    new Set();
+
+  for (
+    const stops of
+    stopTimesByTrip.values()
+  ) {
+    for (const stop of stops) {
+      requiredStopIds.add(
+        stop.stopId
+      );
+    }
+  }
 
   const stopNames =
     new Map();
@@ -499,6 +508,8 @@ async function prepareData() {
       const stopId =
         row[stopIdIndex];
 
+      // Ignorar todas as paragens
+      // que não pertencem à 749.
       if (
         !requiredStopIds.has(
           stopId
@@ -512,6 +523,10 @@ async function prepareData() {
         row[stopNameIndex]
       );
     }
+  );
+
+  console.log(
+    `Stops relevantes: ${stopNames.size}`
   );
 
   // ==========================
@@ -885,7 +900,13 @@ async function getVehicles(data) {
         : null;
 
     console.log(
-      `DEBUG ${vehicle.vehicle.id} | trip=${tripId} | direction=${direction} | seq=${currentStopSequence} | stop=${currentStopName ?? '—'} | shapeDist=${matched.shapeDist.toFixed(1)}`
+      `DEBUG ${vehicle.vehicle.id} | ` +
+      `matricula=${vehicle.vehicle.licensePlate || '—'} | ` +
+      `trip=${tripId} | ` +
+      `direction=${direction} | ` +
+      `seq=${currentStopSequence} | ` +
+      `stop=${currentStopName ?? '—'} | ` +
+      `shapeDist=${matched.shapeDist.toFixed(1)}`
     );
     for (const target of targets) {
       let remaining;
@@ -925,6 +946,10 @@ async function getVehicles(data) {
 
         vehicleId:
           vehicle.vehicle.id,
+
+        licensePlate:
+          vehicle.vehicle.licensePlate ||
+          null,
 
         tripId,
 
@@ -1193,6 +1218,8 @@ function buildStatus(tracker, currentKeys) {
         next: next
           ? {
             vehicleId: next.vehicleId,
+            licensePlate:
+              next.licensePlate,
             currentStopName:
               next.currentStopName,
             etaSeconds: next.eta,
@@ -1204,6 +1231,8 @@ function buildStatus(tracker, currentKeys) {
 
         vehicles: vehicles.map(vehicle => ({
           vehicleId: vehicle.vehicleId,
+          licensePlate:
+            vehicle.licensePlate,
           currentStopName:
             vehicle.currentStopName,
           etaSeconds: vehicle.eta,
@@ -1281,6 +1310,7 @@ function startWebServer(getStatus) {
           '(isNext?"<span class=\\"badge\\">PRÓXIMO</span>":"")+',
           '"</div>"+',
           '"<div class=\\"vehicle-stop\\">"+(v.currentStopName||"Localização desconhecida")+"</div>"+',
+          '"<div class=\\"vehicle-plate\\">Matrícula: "+(v.licensePlate||"Desconhecida")+"</div>"+',
           '"<div class=\\"vehicle-distance\\">"+Math.round(v.remainingMeters)+" m</div>"+',
           '"<div class=\\"vehicle-meta\\">ETA: "+fmtEta(v.etaSeconds)+" · "+',
           '(v.averageSpeedKmh==null?"velocidade a calcular":v.averageSpeedKmh.toFixed(1)+" km/h")+',
