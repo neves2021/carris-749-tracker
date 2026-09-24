@@ -53,6 +53,8 @@ const DISAPPEAR_AFTER_MS = 45000;
 
 const SPEED_HISTORY_SIZE = 5;
 
+const LAST_PASSED_MAX_AGE_MS = 60 * 60 * 1000;
+
 // ==========================
 // GEOMETRIA
 // ==========================
@@ -997,14 +999,16 @@ async function getVehicles(data) {
         `DEBUG TARGET ${vehicle.vehicle.id} | ${target.targetName} | targetDist=${target.targetShapeDist} | vehicleDist=${matched.shapeDist.toFixed(1)} | remaining=${remaining.toFixed(1)}`
       );
       /*
-       * Se o ve�culo j� passou o target,
-       * n�o � candidato a esta paragem.
+       * Se o veículo já passou o target,
+       * devolvemos a leitura para que o tracker
+       * possa detetar a passagem.
        */
-      if (remaining < -ARRIVAL_TOLERANCE_M) {
-        continue;
-      }
+      const passedTarget =
+        remaining < -ARRIVAL_TOLERANCE_M;
 
       vehicles.push({
+        passedTarget,
+
         targetId:
           target.targetId,
 
@@ -1260,7 +1264,11 @@ function calculateEta(
 // WEB / API
 // ==========================
 
-function buildStatus(tracker, currentKeys) {
+function buildStatus(
+  tracker,
+  currentKeys,
+  lastPassedByTarget
+) {
   return {
     updatedAt: new Date().toISOString(),
 
@@ -1279,6 +1287,31 @@ function buildStatus(tracker, currentKeys) {
 
       const next =
         vehicles[0] ?? null;
+
+      const lastPassed =
+        lastPassedByTarget.get(target.id) ?? null;
+
+      const lastPassedAgeMs =
+        lastPassed
+          ? Date.now() - lastPassed.passedAt
+          : null;
+
+      const recentLastPassed =
+        lastPassed &&
+          lastPassedAgeMs >= 0 &&
+          lastPassedAgeMs <=
+          LAST_PASSED_MAX_AGE_MS
+          ? {
+            vehicleId:
+              lastPassed.vehicleId,
+            licensePlate:
+              lastPassed.licensePlate,
+            passedAt:
+              new Date(
+                lastPassed.passedAt
+              ).toISOString()
+          }
+          : null;
 
       return {
         id: target.id,
@@ -1304,6 +1337,9 @@ function buildStatus(tracker, currentKeys) {
             timestamp: next.timestamp
           }
           : null,
+
+        lastPassed:
+          recentLastPassed,
 
         vehicles: vehicles.map(vehicle => ({
           vehicleId: vehicle.vehicleId,
@@ -1375,6 +1411,7 @@ function startWebServer(getStatus) {
           '.detail strong{color:#17202a;font-weight:650}',
           '.updated{font-size:12px;color:#8a919a;margin-top:12px;text-align:right}',
           '.none{padding:18px 4px 10px;text-align:center;color:#6b7280;font-size:14px;line-height:1.6}',
+          '.last-passed{margin-top:10px;font-size:13px;color:#6b7280}',
           '.none strong{display:block;color:#374151;font-size:15px;margin-bottom:2px}',
           '.others-title{font-size:11px;font-weight:800;letter-spacing:.7px;color:#8a919a;margin:16px 2px 8px}',
           '.other-vehicle{margin-top:8px}',
@@ -1405,6 +1442,15 @@ function startWebServer(getStatus) {
           'minute:"2-digit",',
           'second:"2-digit"',
           '});',
+          '}',
+          'function fmtRelativeTime(iso){',
+          'if(!iso)return null;',
+          'const seconds=Math.max(0,Math.floor((Date.now()-new Date(iso).getTime())/1000));',
+          'if(seconds<60)return seconds+" s";',
+          'const minutes=Math.floor(seconds/60);',
+          'if(minutes<60)return minutes+" min";',
+          'const hours=Math.floor(minutes/60);',
+          'return hours+" h";',
           '}',
           'function vehicleHtml(v,isNext,updatedAt){',
           'const speed=v.averageSpeedKmh==null?"a calcular":v.averageSpeedKmh.toFixed(1)+" km/h";',
@@ -1441,9 +1487,14 @@ function startWebServer(getStatus) {
           'const vehicles=t.vehicles||[];',
           'const n=t.next;',
           'if(!n){',
+          'const lastPassed=t.lastPassed;',
+          'const relative=lastPassed?fmtRelativeTime(lastPassed.passedAt):null;',
+          'const lastPassedHtml=relative',
+          '  ? "<div class=\\"last-passed\\">Último "+t.routeShortName+" passou há "+relative+"</div>"',
+          '  : "";',
           'return "<div class=\\"card\\">"+',
           '"<div class=\\"route\\"><strong>"+t.routeShortName+"</strong> · "+t.name+" → "+t.destination+"</div>"+',
-          '"<div class=\\"none\\"><strong>Sem "+t.routeShortName+" a caminho neste momento</strong><br>A aguardar o próximo veículo.</div>"+',
+          '"<div class=\\"none\\"><strong>Sem "+t.routeShortName+" a caminho neste momento</strong><br>A aguardar o próximo veículo."+lastPassedHtml+"</div>"+',
           '"</div>";',
           '}',
           'const others=vehicles.slice(1);',
@@ -1512,6 +1563,9 @@ async function main() {
   const tracker =
     new Map();
 
+  const lastPassedByTarget =
+    new Map();
+
   let latestStatus = {
     updatedAt: null,
     targets: []
@@ -1563,10 +1617,15 @@ async function main() {
 
       const currentKeys =
         new Set(
-          vehicles.map(
-            v =>
-              `${v.vehicleId}:${v.targetId}`
-          )
+          vehicles
+            .filter(
+              v =>
+                !v.passedTarget
+            )
+            .map(
+              v =>
+                `${v.vehicleId}:${v.targetId}`
+            )
         );
 
       console.log(
@@ -1601,6 +1660,7 @@ async function main() {
               lastSeenAt: null,
               disappeared: false,
               passed: false,
+              lastPassedAt: null,
               lastResult: null
             }
           );
@@ -1610,11 +1670,45 @@ async function main() {
           tracker.get(key);
 
         if (
+          vehicle.passedTarget
+        ) {
+          if (
+            state.lastResult &&
+            !state.passed &&
+            state.lastResult.remaining >= 0
+          ) {
+            state.passed =
+              true;
+
+            lastPassedByTarget.set(
+              vehicle.targetId,
+              {
+                vehicleId:
+                  vehicle.vehicleId,
+                licensePlate:
+                  vehicle.licensePlate,
+                passedAt:
+                  vehicle.timestamp * 1000
+              }
+            );
+
+            console.log(
+              `\n[${formatTime(vehicle.timestamp)}] >>> ${vehicle.vehicleId} PASSOU ${vehicle.targetName} <<<`
+            );
+          }
+
+          continue;
+        }
+
+        if (
           state.disappeared
         ) {
           console.log(
             `\n[${formatTime(vehicle.timestamp)}] >>> ${vehicle.vehicleId} VOLTOU AO REALTIME (${vehicle.targetName}) <<<`
           );
+
+          state.passed =
+            false;
         }
 
         state.disappeared =
@@ -1699,6 +1793,18 @@ async function main() {
           state.passed =
             true;
 
+          lastPassedByTarget.set(
+            vehicle.targetId,
+            {
+              vehicleId:
+                vehicle.vehicleId,
+              licensePlate:
+                vehicle.licensePlate,
+              passedAt:
+                vehicle.timestamp * 1000
+            }
+          );
+
           console.log(
             `\n[${formatTime(vehicle.timestamp)}] >>> ${vehicle.vehicleId} PASSOU ${vehicle.targetName} <<<`
           );
@@ -1770,7 +1876,8 @@ async function main() {
       latestStatus =
         buildStatus(
           tracker,
-          currentKeys
+          currentKeys,
+          lastPassedByTarget
         );
 
       // ==========================
