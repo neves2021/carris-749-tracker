@@ -225,7 +225,7 @@ async function prepareData() {
   // TRIPS
   // ==========================
 
-  const trips =
+  let trips =
     readCsv(zip, 'trips.txt');
 
   const tripRouteIndex =
@@ -266,11 +266,13 @@ async function prepareData() {
     );
   }
 
+  trips = null;
+
   // ==========================
   // STOP TIMES
   // ==========================
 
-  const stopTimes =
+  let stopTimes =
     readCsv(zip, 'stop_times.txt');
 
   const stTripIdIndex =
@@ -339,11 +341,13 @@ async function prepareData() {
     );
   }
 
+  stopTimes = null;
+
   // ==========================
   // STOPS
   // ==========================
 
-  const stops =
+  let stops =
     readCsv(zip, 'stops.txt');
 
   const stopIdIndex =
@@ -359,18 +363,43 @@ async function prepareData() {
   const stopNames =
     new Map();
 
+  const requiredStopIds =
+    new Set();
+
+  for (
+    const stops of
+    stopTimesByTrip.values()
+  ) {
+    for (const stop of stops) {
+      requiredStopIds.add(
+        stop.stopId
+      );
+    }
+  }
+
   for (const row of stops.rows) {
+    const stopId =
+      row[stopIdIndex];
+
+    if (
+      !requiredStopIds.has(stopId)
+    ) {
+      continue;
+    }
+
     stopNames.set(
-      row[stopIdIndex],
+      stopId,
       row[stopNameIndex]
     );
   }
+
+  stops = null;
 
   // ==========================
   // SHAPES
   // ==========================
 
-  const shapes =
+  let shapes =
     readCsv(zip, 'shapes.txt');
 
   const shapeIdColumn =
@@ -401,9 +430,27 @@ async function prepareData() {
   const shapesById =
     new Map();
 
+  const requiredShapeIds =
+    new Set();
+
+  for (
+    const trip of
+    routeTrips.values()
+  ) {
+    requiredShapeIds.add(
+      trip.shapeId
+    );
+  }
+
   for (const row of shapes.rows) {
     const shapeId =
       row[shapeIdColumn];
+
+    if (
+      !requiredShapeIds.has(shapeId)
+    ) {
+      continue;
+    }
 
     if (
       !shapesById.has(shapeId)
@@ -448,6 +495,8 @@ async function prepareData() {
         a.seq - b.seq
     );
   }
+
+  shapes = null;
 
   // ==========================
   // TARGETS POR TRIP
