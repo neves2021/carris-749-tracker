@@ -3,6 +3,509 @@ const Adm = require('adm-zip');
 const { FeedMessage } =
   require('gtfs-realtime-bindings').transit_realtime;
 
+const Database = require('better-sqlite3');
+const path = require('path');
+const fs = require('fs');
+
+const DB_PATH =
+  process.env.HISTORY_DB_PATH ||
+  path.join(__dirname, 'data', 'history.db');
+
+fs.mkdirSync(
+  path.dirname(DB_PATH),
+  { recursive: true }
+);
+
+const historyDb =
+  new Database(DB_PATH);
+
+historyDb.exec(`
+  CREATE TABLE IF NOT EXISTS passage_events (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    service_date TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    route_id TEXT NOT NULL,
+    trip_id TEXT NOT NULL,
+    vehicle_id TEXT NOT NULL,
+    license_plate TEXT,
+    target_id TEXT NOT NULL,
+    stop_id TEXT NOT NULL,
+    scheduled_arrival TEXT
+  );
+
+  CREATE UNIQUE INDEX IF NOT EXISTS
+    idx_passage_events_service_trip_target
+  ON passage_events (
+    service_date,
+    trip_id,
+    target_id
+  );
+
+  CREATE TABLE IF NOT EXISTS trip_departures (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    service_date TEXT NOT NULL,
+    observed_at TEXT NOT NULL,
+    route_id TEXT NOT NULL,
+    trip_id TEXT NOT NULL,
+    vehicle_id TEXT NOT NULL,
+    license_plate TEXT
+  );
+
+  CREATE UNIQUE INDEX IF NOT EXISTS
+    idx_trip_departures_service_trip
+  ON trip_departures (
+    service_date,
+    trip_id
+  );
+
+  DROP VIEW IF EXISTS trip_times;
+
+  CREATE VIEW trip_times AS
+  SELECT
+    p.service_date,
+    p.route_id,
+    p.trip_id,
+    p.vehicle_id,
+    p.license_plate,
+    d.observed_at AS departure_at,
+    p.target_id,
+    p.observed_at AS passed_at,
+    ROUND(
+      (
+        julianday(p.observed_at) -
+        julianday(d.observed_at)
+      ) * 86400
+    ) AS travel_time_seconds
+  FROM passage_events p
+  JOIN trip_departures d
+    ON d.service_date = p.service_date
+   AND d.trip_id = p.trip_id;
+`);
+
+const insertPassageEvent =
+  historyDb.prepare(`
+    INSERT OR IGNORE INTO passage_events (
+      service_date,
+      observed_at,
+      route_id,
+      trip_id,
+      vehicle_id,
+      license_plate,
+      target_id,
+      stop_id,
+      scheduled_arrival
+    )
+    VALUES (
+      @serviceDate,
+      @observedAt,
+      @routeId,
+      @tripId,
+      @vehicleId,
+      @licensePlate,
+      @targetId,
+      @stopId,
+      @scheduledArrival
+    )
+  `);
+
+const insertTripDeparture =
+  historyDb.prepare(`
+    INSERT OR IGNORE INTO trip_departures (
+      service_date,
+      observed_at,
+      route_id,
+      trip_id,
+      vehicle_id,
+      license_plate
+    )
+    VALUES (
+      @serviceDate,
+      @observedAt,
+      @routeId,
+      @tripId,
+      @vehicleId,
+      @licensePlate
+    )
+  `);
+
+function saveTripDeparture(vehicle) {
+  const observedAt =
+    new Date(
+      vehicle.timestamp * 1000
+    );
+
+  const serviceDate =
+    observedAt
+      .toLocaleDateString(
+        'en-CA',
+        {
+          timeZone: 'Europe/Lisbon'
+        }
+      );
+
+  insertTripDeparture.run({
+    serviceDate,
+
+    observedAt:
+      observedAt.toISOString(),
+
+    routeId:
+      vehicle.routeId,
+
+    tripId:
+      vehicle.tripId,
+
+    vehicleId:
+      vehicle.vehicleId,
+
+    licensePlate:
+      vehicle.licensePlate
+  });
+}
+
+
+function getLisbonDateParts(isoTimestamp) {
+  const date = new Date(isoTimestamp);
+
+  const parts = new Intl.DateTimeFormat(
+    'en-GB',
+    {
+      timeZone: 'Europe/Lisbon',
+      weekday: 'short',
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hourCycle: 'h23'
+    }
+  ).formatToParts(date);
+
+  const result = {};
+
+  for (const part of parts) {
+    result[part.type] = part.value;
+  }
+
+  return {
+    weekday: result.weekday,
+    time:
+      `${result.hour}:${result.minute}:${result.second}`
+  };
+}
+
+function getTravelTimeStats({
+  targetId,
+  startTime,
+  endTime,
+  dayType
+}) {
+  const trips =
+    historyDb
+      .prepare(`
+        SELECT *
+        FROM trip_times
+        WHERE target_id = ?
+      `)
+      .all(targetId);
+
+  const filteredTrips =
+    trips.filter(trip => {
+      const local =
+        getLisbonDateParts(
+          trip.departure_at
+        );
+
+      const isWeekday =
+        !['Sat', 'Sun'].includes(
+          local.weekday
+        );
+
+      const matchesDayType =
+        dayType === 'weekday'
+          ? isWeekday
+          : dayType === 'weekend'
+            ? !isWeekday
+            : true;
+
+      const matchesTime =
+        local.time >= startTime &&
+        local.time < endTime;
+
+      return (
+        matchesDayType &&
+        matchesTime
+      );
+    });
+
+  const validTrips =
+    filteredTrips.filter(
+      trip =>
+        Number.isFinite(
+          trip.travel_time_seconds
+        ) &&
+        trip.travel_time_seconds >= 0
+    );
+
+  if (!validTrips.length) {
+    return {
+      trips: 0,
+      minSeconds: null,
+      avgSeconds: null,
+      maxSeconds: null,
+      fastest: null
+    };
+  }
+
+  const times =
+    validTrips.map(
+      trip =>
+        trip.travel_time_seconds
+    );
+
+  const fastestTrip =
+    validTrips.reduce(
+      (best, trip) =>
+        trip.travel_time_seconds <
+          best.travel_time_seconds
+          ? trip
+          : best
+    );
+
+  return {
+    trips: times.length,
+
+    minSeconds:
+      Math.min(...times),
+
+    avgSeconds:
+      Math.round(
+        times.reduce(
+          (sum, value) =>
+            sum + value,
+          0
+        ) / times.length
+      ),
+
+    maxSeconds:
+      Math.max(...times),
+
+    fastest: {
+      travelTimeSeconds:
+        fastestTrip.travel_time_seconds,
+
+      vehicleId:
+        fastestTrip.vehicle_id,
+
+      licensePlate:
+        fastestTrip.license_plate,
+
+      departureAt:
+        fastestTrip.departure_at,
+
+      passedAt:
+        fastestTrip.passed_at
+    }
+  };
+}
+
+function formatDuration(
+  seconds
+) {
+  if (
+    seconds == null ||
+    !Number.isFinite(seconds)
+  ) {
+    return null;
+  }
+
+  const minutes =
+    Math.floor(seconds / 60);
+
+  const remainingSeconds =
+    seconds % 60;
+
+  if (minutes === 0) {
+    return `${remainingSeconds}s`;
+  }
+
+  if (remainingSeconds === 0) {
+    return `${minutes}m`;
+  }
+
+  return `${minutes}m ${remainingSeconds}s`;
+}
+
+function formatDayType(
+  dayType
+) {
+  if (dayType === 'weekday') {
+    return 'dia útil';
+  }
+
+  if (dayType === 'weekend') {
+    return 'fim de semana';
+  }
+
+  return 'qualquer dia';
+}
+
+function isValidTime(
+  value
+) {
+  const match =
+    /^(\d{2}):(\d{2})(?::(\d{2}))?$/.exec(
+      value
+    );
+
+  if (!match) {
+    return false;
+  }
+
+  const hours =
+    Number(match[1]);
+
+  const minutes =
+    Number(match[2]);
+
+  const seconds =
+    match[3] == null
+      ? 0
+      : Number(match[3]);
+
+  return (
+    hours >= 0 &&
+    hours <= 23 &&
+    minutes >= 0 &&
+    minutes <= 59 &&
+    seconds >= 0 &&
+    seconds <= 59
+  );
+}
+
+function formatTravelTimeStat({
+  target,
+  routeShortName,
+  startTime,
+  endTime,
+  dayType,
+  stats
+}) {
+  if (!stats.trips || !stats.fastest) {
+    return (
+      `${routeShortName} — ` +
+      `${target.name} → ${target.destination}: ` +
+      `sem viagens registadas entre ` +
+      `${startTime.slice(0, 5)} e ${endTime.slice(0, 5)} ` +
+      `(${formatDayType(dayType)}).`
+    );
+  }
+
+  const fastest =
+    stats.fastest;
+
+  return (
+    `A viagem mais rápida do ` +
+    `${routeShortName} até ${target.name} ` +
+    `foi de ${formatDuration(
+      fastest.travelTimeSeconds
+    )}, ` +
+    `num ${formatDayType(dayType)} ` +
+    `com partida entre as ` +
+    `${startTime.slice(0, 5)} e ${endTime.slice(0, 5)}. ` +
+    `Veículo ${fastest.vehicleId}` +
+    (
+      fastest.licensePlate
+        ? ` (${fastest.licensePlate})`
+        : ''
+    ) +
+    `.`
+  );
+}
+
+function getAllTravelTimeStats({
+  startTime,
+  endTime,
+  dayType
+}) {
+  return TARGETS.map(target => ({
+    targetId:
+      target.id,
+
+    targetName:
+      target.name,
+
+    routeId:
+      target.routeId,
+
+    routeShortName:
+      ROUTES.find(
+        route =>
+          route.routeId ===
+          target.routeId
+      )?.shortName ?? null,
+
+    destination:
+      target.destination,
+
+    stats:
+      getTravelTimeStats({
+        targetId:
+          target.id,
+
+        startTime,
+
+        endTime,
+
+        dayType
+      })
+  }));
+}
+
+
+
+function savePassageEvent(vehicle) {
+  const observedAt =
+    new Date(
+      vehicle.timestamp * 1000
+    );
+
+  const serviceDate =
+    observedAt
+      .toLocaleDateString(
+        'en-CA',
+        {
+          timeZone: 'Europe/Lisbon'
+        }
+      );
+
+  insertPassageEvent.run({
+    serviceDate,
+
+    observedAt:
+      observedAt.toISOString(),
+
+    routeId:
+      vehicle.routeId,
+
+    tripId:
+      vehicle.tripId,
+
+    vehicleId:
+      vehicle.vehicleId,
+
+    licensePlate:
+      vehicle.licensePlate,
+
+    targetId:
+      vehicle.targetId,
+
+    stopId:
+      vehicle.stopId,
+
+    scheduledArrival:
+      vehicle.scheduledTargetArrivalTime
+  });
+}
+
 const GTFS_URL =
   'https://gateway.carris.pt/gateway/gtfs/api/v2.11/GTFS';
 
@@ -788,6 +1291,10 @@ async function prepareData() {
           stopId: target.stopId,
           stopSequence:
             targetStop.sequence,
+
+          firstStopSequence:
+            firstStop.sequence,
+
           targetShapeDist:
             targetStop.shapeDist,
 
@@ -1030,6 +1537,8 @@ async function getVehicles(data) {
         targetId:
           target.targetId,
 
+        stopId:
+          target.stopId,
         scheduledDepartureTime:
           target.scheduledDepartureTime,
 
@@ -1049,6 +1558,9 @@ async function getVehicles(data) {
           vehicle.vehicle.licensePlate ||
           null,
 
+        routeId:
+          trip.routeId,
+
         tripId,
 
         direction,
@@ -1067,6 +1579,9 @@ async function getVehicles(data) {
 
         targetStopSequence:
           target.stopSequence,
+
+        firstStopSequence:
+          target.firstStopSequence,
 
         lat,
         lon,
@@ -1397,6 +1912,105 @@ function startWebServer(getStatus) {
   const server =
     http.createServer((req, res) => {
 
+      if (req.url.startsWith('/api/stats')) {
+        const url =
+          new URL(
+            req.url,
+            `http://${req.headers.host || 'localhost'}`
+          );
+
+        const startTime =
+          url.searchParams.get(
+            'start'
+          ) || '00:00:00';
+
+        const endTime =
+          url.searchParams.get(
+            'end'
+          ) || '24:00:00';
+
+        const dayType =
+          url.searchParams.get(
+            'day'
+          ) || 'all';
+
+        const validDayTypes = [
+          'weekday',
+          'weekend',
+          'all'
+        ];
+
+        if (
+          !isValidTime(startTime) ||
+          !isValidTime(endTime)
+        ) {
+          res.writeHead(400, {
+            'Content-Type':
+              'application/json; charset=utf-8',
+            'Cache-Control':
+              'no-store'
+          });
+
+          res.end(
+            JSON.stringify({
+              error:
+                'start e end devem estar no formato HH:MM ou HH:MM:SS'
+            })
+          );
+
+          return;
+        }
+
+        if (
+          !validDayTypes.includes(
+            dayType
+          )
+        ) {
+          res.writeHead(400, {
+            'Content-Type':
+              'application/json; charset=utf-8',
+            'Cache-Control':
+              'no-store'
+          });
+
+          res.end(
+            JSON.stringify({
+              error:
+                'day deve ser weekday, weekend ou all'
+            })
+          );
+
+          return;
+        }
+
+        const stats =
+          getAllTravelTimeStats({
+            startTime,
+            endTime,
+            dayType
+          });
+
+        res.writeHead(200, {
+          'Content-Type':
+            'application/json; charset=utf-8',
+          'Cache-Control':
+            'no-store'
+        });
+
+        res.end(
+          JSON.stringify({
+            filters: {
+              startTime,
+              endTime,
+              dayType
+            },
+            results: stats
+          })
+        );
+
+        return;
+      }
+
       if (req.url === '/api/status') {
         res.writeHead(200, {
           'Content-Type': 'application/json; charset=utf-8',
@@ -1450,6 +2064,17 @@ function startWebServer(getStatus) {
           '.others-title{font-size:11px;font-weight:800;letter-spacing:.7px;color:#8a919a;margin:16px 2px 8px}',
           '.other-vehicle{margin-top:8px}',
           '.error{color:#b42318}',
+          '.stats-card{background:#fff;border:1px solid #e5e7eb;border-radius:18px;padding:18px;margin-top:24px;box-shadow:0 3px 12px rgba(0,0,0,.06)}',
+          '.stats-title{font-size:18px;font-weight:750;margin-bottom:16px}',
+          '.stats-filters{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:18px}',
+          '.stats-filter label{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.6px;color:#6b7280;margin-bottom:5px}',
+          '.stats-filter select,.stats-filter input{width:100%;padding:9px 10px;border:1px solid #d1d5db;border-radius:10px;background:#fff;font:inherit;font-size:14px}',
+          '.stats-result{padding:12px 0;border-top:1px solid #e5e7eb;font-size:14px;line-height:1.5}',
+          '.stats-result:first-child{border-top:0}',
+          '.stats-route{font-weight:700;margin-bottom:3px}',
+          '.stats-values{color:#4b5563;font-size:13px}',
+          '.stats-fastest{margin-top:6px}',
+          '.stats-loading{color:#6b7280;font-size:14px}',
           '@media (max-width:420px){.metric-value{font-size:22px}.vehicle-details{grid-template-columns:1fr}}',
           '</style>',
           '</head>',
@@ -1457,6 +2082,28 @@ function startWebServer(getStatus) {
           '<main>',
           '<h1>Monitor de autocarros</h1>',
           '<div id="app">A carregar...</div>',
+          '<section class="stats-card">',
+          '<div class="stats-title">Estatísticas</div>',
+          '<div class="stats-filters">',
+          '<div class="stats-filter">',
+          '<label for="stats-start">Das</label>',
+          '<input id="stats-start" type="time" value="14:00">',
+          '</div>',
+          '<div class="stats-filter">',
+          '<label for="stats-end">Às</label>',
+          '<input id="stats-end" type="time" value="15:00">',
+          '</div>',
+          '<div class="stats-filter">',
+          '<label for="stats-day">Dia</label>',
+          '<select id="stats-day">',
+          '<option value="weekday">Dia útil</option>',
+          '<option value="weekend">Fim de semana</option>',
+          '<option value="all">Todos</option>',
+          '</select>',
+          '</div>',
+          '</div>',
+          '<div id="stats-results" class="stats-loading">A carregar estatísticas...</div>',
+          '</section>',
           '</main>',
           '<script>',
           'function fmtEta(s){',
@@ -1564,6 +2211,106 @@ function startWebServer(getStatus) {
           '"<div class=\\"updated\\">Informação obtida às "+fmtTime(updatedAt)+"</div>"+',
           '"</div>";',
           '}',
+          'function fmtDuration(seconds){',
+          'if(seconds==null || !Number.isFinite(seconds))return "—";',
+          'const minutes=Math.floor(seconds/60);',
+          'const remainingSeconds=seconds%60;',
+          'if(minutes===0)return remainingSeconds+"s";',
+          'if(remainingSeconds===0)return minutes+"m";',
+          'return minutes+"m "+remainingSeconds+"s";',
+          '}',
+          'async function refreshStats(){',
+          'const start=document.getElementById("stats-start").value;',
+          'const end=document.getElementById("stats-end").value;',
+          'const day=document.getElementById("stats-day").value;',
+          'const results=document.getElementById("stats-results");',
+          '',
+          'if(!start || !end){',
+          'results.innerHTML="<div class=\\"stats-loading\\">Indica o intervalo horário.</div>";',
+          'return;',
+          '}',
+          '',
+          'results.innerHTML="<div class=\\"stats-loading\\">A carregar estatísticas...</div>";',
+          '',
+          'try{',
+          'const params=new URLSearchParams({',
+          'start:start+":00",',
+          'end:end+":00",',
+          'day:day',
+          '});',
+          '',
+          'const r=await fetch(',
+          '"/api/stats?"+params.toString(),',
+          '{cache:"no-store"}',
+          ');',
+          '',
+          'if(!r.ok){',
+          'const error=await r.json().catch(function(){',
+          'return {error:"HTTP "+r.status};',
+          '});',
+          '',
+          'throw new Error(',
+          'error.error || "HTTP "+r.status',
+          ');',
+          '}',
+          '',
+          'const data=await r.json();',
+          '',
+          'results.innerHTML=data.results.map(function(result){',
+          'const stats=result.stats;',
+          '',
+          'if(!stats.trips){',
+          'return "<div class=\\"stats-result\\">"+',
+          '"<div class=\\"stats-route\\">"+',
+          'result.routeShortName+',
+          '" · "+',
+          'result.targetName+',
+          '" → "+',
+          'result.destination+',
+          '"</div>"+',
+          '"<div class=\\"stats-values\\">"+',
+          '"Sem viagens registadas neste período."+',
+          '"</div>"+',
+          '"</div>";',
+          '}',
+          '',
+          'const fastest=stats.fastest;',
+          '',
+          'return "<div class=\\"stats-result\\">"+',
+          '"<div class=\\"stats-route\\">"+',
+          'result.routeShortName+',
+          '" · "+',
+          'result.targetName+',
+          '" → "+',
+          'result.destination+',
+          '"</div>"+',
+          '"<div class=\\"stats-values\\">"+',
+          'stats.trips+',
+          '(stats.trips===1?" viagem":" viagens")+',
+          '" · mais rápida "+',
+          'fmtDuration(stats.minSeconds)+',
+          '" · média "+',
+          'fmtDuration(stats.avgSeconds)+',
+          '" · mais lenta "+',
+          'fmtDuration(stats.maxSeconds)+',
+          '"</div>"+',
+          '"<div class=\\"stats-fastest\\">"+',
+          '"Mais rápida: <strong>"+',
+          'fmtDuration(fastest.travelTimeSeconds)+',
+          '"</strong> · veículo "+',
+          'fastest.vehicleId+',
+          '(fastest.licensePlate',
+          '?" ("+fastest.licensePlate+")"',
+          ':"")+',
+          '"</div>"+',
+          '"</div>";',
+          '}).join("");',
+          '',
+          '}catch(e){',
+          'console.error(e);',
+          'results.innerHTML="<div class=\\"stats-loading\\">Erro ao obter estatísticas: "+e.message+"</div>";',
+          '}',
+          '}',
           'async function refresh(){',
           'try{',
           'const r=await fetch("/api/status",{cache:"no-store"});',
@@ -1601,6 +2348,12 @@ function startWebServer(getStatus) {
           '}',
           '}',
           'refresh();',
+          'refreshStats();',
+          '',
+          'document.getElementById("stats-start").addEventListener("change",refreshStats);',
+          'document.getElementById("stats-end").addEventListener("change",refreshStats);',
+          'document.getElementById("stats-day").addEventListener("change",refreshStats);',
+          '',
           'setInterval(refresh,15000);',
           '</script>',
           '</body>',
@@ -1657,6 +2410,9 @@ async function main() {
 
   const lastPassedByTarget =
     new Map();
+
+  const tripDepartureTracker =
+    new Set();
 
   let latestStatus = {
     updatedAt: null,
@@ -1762,6 +2518,26 @@ async function main() {
           tracker.get(key);
 
         if (
+          vehicle.currentStopSequence >
+          vehicle.firstStopSequence &&
+          !tripDepartureTracker.has(
+            vehicle.tripId
+          )
+        ) {
+          tripDepartureTracker.add(
+            vehicle.tripId
+          );
+
+          saveTripDeparture(
+            vehicle
+          );
+
+          console.log(
+            `\n[${formatTime(vehicle.timestamp)}] >>> ${vehicle.vehicleId} SAIU DA PRIMEIRA PARAGEM (${vehicle.tripId}) <<<`
+          );
+        }
+
+        if (
           vehicle.passedTarget
         ) {
           if (
@@ -1771,6 +2547,8 @@ async function main() {
           ) {
             state.passed =
               true;
+
+            savePassageEvent(vehicle);
 
             lastPassedByTarget.set(
               vehicle.targetId,
@@ -1884,6 +2662,10 @@ async function main() {
         ) {
           state.passed =
             true;
+
+          savePassageEvent(
+            vehicle
+          );
 
           lastPassedByTarget.set(
             vehicle.targetId,

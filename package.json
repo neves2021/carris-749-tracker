@@ -13,6 +13,7 @@
   "type": "commonjs",
   "dependencies": {
     "adm-zip": "^0.6.1",
+    "better-sqlite3": "^13.0.3",
     "gtfs-realtime-bindings": "^2.2.0"
   }
 }

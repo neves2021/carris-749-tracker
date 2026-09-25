@@ -8,3 +8,4 @@ inspect-*.js
 measure-*.js
 eta-749-live.js
 eta-749.js
+data/history.db
