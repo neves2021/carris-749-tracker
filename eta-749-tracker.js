@@ -1652,6 +1652,11 @@ async function prepareData() {
           firstStopSequence:
             firstStop.sequence,
 
+          firstStopName:
+            stopNames.get(
+              firstStop.stopId
+            ) ?? firstStop.stopId,
+
           targetShapeDist:
             targetStop.shapeDist,
 
@@ -1906,6 +1911,9 @@ async function getVehicles(data) {
 
         targetName:
           target.targetName,
+
+        firstStopName:
+          target.firstStopName,
 
         destination:
           target.destination,
@@ -2190,6 +2198,19 @@ function buildStatus(
       const next =
         vehicles[0] ?? null;
 
+      const targetSchedule =
+        [...targetsByTrip.values()]
+          .flat()
+          .find(
+            item =>
+              item.targetId ===
+              target.id
+          );
+
+      const firstStopName =
+        targetSchedule?.firstStopName ??
+        null;
+
       const lastPassed =
         lastPassedByTarget.get(target.id) ?? null;
 
@@ -2234,6 +2255,8 @@ function buildStatus(
               target.routeId
           )?.shortName ?? target.routeId,
         name: target.name,
+        firstStopName:
+          firstStopName,
         destination: target.destination,
 
         next: next
@@ -2421,6 +2444,7 @@ function startWebServer(getStatus) {
           '.card{background:#fff;border:1px solid #e5e7eb;border-radius:18px;padding:18px;margin-bottom:16px;box-shadow:0 3px 12px rgba(0,0,0,.06)}',
           '.accordion-header{display:flex;align-items:center;justify-content:space-between;gap:12px;cursor:pointer;user-select:none}',
           '.accordion-header .route{margin-bottom:0}',
+          '.target-stop{font-weight:700}',
           '.accordion-icon{font-size:20px;color:#6b7280;transition:transform .15s ease}',
           '.accordion-icon.open{transform:rotate(90deg)}',
           '.accordion-content{margin-top:16px}',
@@ -2430,7 +2454,7 @@ function startWebServer(getStatus) {
           '.accordion-status.arriving{color:#15803d;font-weight:700}',
           '.status-dot{width:8px;height:8px;border-radius:50%;background:#22c55e;display:inline-block;flex:0 0 auto;animation:pulse-dot 1.4s ease-in-out infinite}',
           '@keyframes pulse-dot{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.35;transform:scale(.75)}}',
-          '.route{font-size:15px;font-weight:500;color:#4b5563;margin-bottom:14px}',
+          '.route{font-size:14px;font-weight:500;color:#4b5563;margin-bottom:14px}',
           '.route strong{color:#111827;font-weight:750}',
           '.vehicle{border:1px solid #e5e7eb;border-radius:14px;padding:16px;background:#fafafa}',
           '.vehicle.next{background:#fff;border-color:#d7dce2}',
@@ -2540,10 +2564,10 @@ function startWebServer(getStatus) {
           '}',
           'function accordionStatus(t){',
           'if(t.next && Number.isFinite(t.next.remainingMeters)){',
-          'if(t.next.remainingMeters<=500){',
-          'return "<div class=\\"accordion-status arriving\\"><span class=\\"status-dot\\"></span>Autocarro a chegar!</div>";',
+          'if(t.next.remainingMeters<=599){',
+          'return "<div class=\\"accordion-status arriving\\"><span class=\\"status-dot\\"></span>A chegar!</div>";',
           '}',
-          'return "<div class=\\"accordion-status\\"><span class=\\"status-dot\\"></span>Autocarro a caminho</div>";',
+          'return "<div class=\\"accordion-status\\"><span class=\\"status-dot\\"></span>A caminho</div>";',
           '}',
           '',
           'if(t.nextScheduledTargetArrival){',
@@ -2755,7 +2779,7 @@ function startWebServer(getStatus) {
           'return "<div class=\\"card\\">"+',
           '"<div class=\\"accordion-header\\" data-target-id=\\""+t.id+"\\">"+',
           '"<div>"+',
-          '"<div class=\\"route\\"><strong>"+t.routeShortName+"</strong> · "+t.name+" → "+t.destination+"</div>"+',
+          '"<div class=\\"route\\"><strong>"+t.routeShortName+"</strong> · "+t.firstStopName+" → <span class=\\"target-stop\\">"+t.name+"</span> → "+t.destination+"</div>"+',
           'accordionStatus(t)+',
           '"</div>"+',
           '"<div class=\\"accordion-icon "+(isOpen?"open":"")+"\\">›</div>"+',
@@ -2772,7 +2796,7 @@ function startWebServer(getStatus) {
           'const isOpen=openTargets.has(t.id);',
           'return "<div class=\\"card\\">"+',
           '"<div class=\\"accordion-header\\" data-target-id=\\""+t.id+"\\">"+',
-          '"<div class=\\"route\\"><strong>"+t.routeShortName+"</strong> · "+t.name+" → "+t.destination+"</div>"+',
+                    '"<div class=\\"route\\"><strong>"+t.routeShortName+"</strong> · "+t.firstStopName+" → <span class=\\"target-stop\\">"+t.name+"</span> → "+t.destination+"</div>"+',
           'accordionStatus(t)+',
           '"<div class=\\"accordion-icon "+(isOpen?"open":"")+"\\">›</div>"+',
           '"</div>"+',
@@ -3000,6 +3024,9 @@ async function main() {
             state.passed =
               true;
 
+            state.lastResult =
+              null;
+
             savePassageEvent(vehicle);
 
             lastPassedByTarget.set(
@@ -3114,6 +3141,9 @@ async function main() {
         ) {
           state.passed =
             true;
+
+          state.lastResult =
+            null;
 
           savePassageEvent(
             vehicle
