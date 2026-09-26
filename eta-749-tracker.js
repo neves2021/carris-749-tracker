@@ -298,13 +298,13 @@ function isServiceActiveOnDate(
   return active;
 }
 
-
 function getNextScheduledTargetArrival(
   targetId,
   targetsByTrip,
   calendar,
   calendarDates,
-  referenceDate = new Date()
+  referenceDate = new Date(),
+  lastPassed = null
 ) {
   const now =
     referenceDate;
@@ -381,6 +381,15 @@ function getNextScheduledTargetArrival(
         target.targetId !==
         targetId ||
         !target.scheduledTargetArrivalTime
+      ) {
+        continue;
+      }
+
+      if (
+        lastPassed &&
+        lastPassed.tripId &&
+        target.tripId ===
+        lastPassed.tripId
       ) {
         continue;
       }
@@ -2181,17 +2190,18 @@ function buildStatus(
       const next =
         vehicles[0] ?? null;
 
+      const lastPassed =
+        lastPassedByTarget.get(target.id) ?? null;
+
       const nextScheduledTargetArrival =
         getNextScheduledTargetArrival(
           target.id,
           targetsByTrip,
           calendar,
           calendarDates,
-          referenceDate
+          referenceDate,
+          lastPassed
         );
-
-      const lastPassed =
-        lastPassedByTarget.get(target.id) ?? null;
 
       const lastPassedAgeMs =
         lastPassed
@@ -2837,17 +2847,6 @@ async function main() {
   const data =
     await prepareData();
 
-  testCalendarForDate(
-    '2026-09-28',
-    [
-      'Inverno_Util_20260606',
-      'Inverno_Sabado_20260606',
-      'Inverno_DomingoFeriado_20260606'
-    ],
-    data.calendar,
-    data.calendarDates
-  );
-
   /*
    * vehicleId:targetId -> {
    *   history: [],
@@ -3127,6 +3126,10 @@ async function main() {
                 vehicle.vehicleId,
               licensePlate:
                 vehicle.licensePlate,
+              tripId:
+                vehicle.tripId,
+              scheduledTargetArrivalTime:
+                vehicle.scheduledTargetArrivalTime,
               passedAt:
                 vehicle.timestamp * 1000
             }
