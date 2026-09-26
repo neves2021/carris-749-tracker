@@ -192,6 +192,247 @@ function getLisbonDateParts(isoTimestamp) {
   };
 }
 
+function isServiceActiveOnDate(
+  serviceId,
+  date,
+  calendar,
+  calendarDates
+) {
+  const dateString =
+    date.toLocaleDateString(
+      'en-CA',
+      {
+        timeZone:
+          'Europe/Lisbon'
+      }
+    );
+
+  const dateParts =
+    dateString.split('-');
+
+  const year =
+    Number(dateParts[0]);
+
+  const month =
+    Number(dateParts[1]);
+
+  const day =
+    Number(dateParts[2]);
+
+  const dateNumber =
+    year * 10000 +
+    month * 100 +
+    day;
+
+  const base =
+    calendar.get(
+      serviceId
+    );
+
+  let active =
+    false;
+
+  if (base) {
+    const start =
+      Number(base.startDate);
+
+    const end =
+      Number(base.endDate);
+
+    if (
+      dateNumber >= start &&
+      dateNumber <= end
+    ) {
+      const weekday =
+        date.getDay();
+
+      const enabled =
+        weekday === 0
+          ? base.sunday
+          : weekday === 1
+            ? base.monday
+            : weekday === 2
+              ? base.tuesday
+              : weekday === 3
+                ? base.wednesday
+                : weekday === 4
+                  ? base.thursday
+                  : weekday === 5
+                    ? base.friday
+                    : base.saturday;
+
+      active =
+        enabled;
+    }
+  }
+
+  const exceptions =
+    calendarDates.get(
+      serviceId
+    ) ?? [];
+
+  const exception =
+    exceptions.find(
+      item =>
+        item.date ===
+        dateString.replace(
+          /-/g,
+          ''
+        )
+    );
+
+  if (exception) {
+    if (
+      exception.exceptionType === 1
+    ) {
+      active = true;
+    }
+
+    if (
+      exception.exceptionType === 2
+    ) {
+      active = false;
+    }
+  }
+
+  return active;
+}
+
+
+function getNextScheduledTargetArrival(
+  targetId,
+  targetsByTrip,
+  calendar,
+  calendarDates,
+  referenceDate = new Date()
+) {
+  const now =
+    referenceDate;
+
+  const localParts =
+    new Intl.DateTimeFormat(
+      'en-GB',
+      {
+        timeZone:
+          'Europe/Lisbon',
+
+        year:
+          'numeric',
+
+        month:
+          '2-digit',
+
+        day:
+          '2-digit',
+
+        hour:
+          '2-digit',
+
+        minute:
+          '2-digit',
+
+        second:
+          '2-digit',
+
+        hourCycle:
+          'h23'
+      }
+    ).formatToParts(now);
+
+  const getPart =
+    type =>
+      localParts.find(
+        part =>
+          part.type === type
+      )?.value;
+
+  const currentHour =
+    Number(
+      getPart('hour')
+    );
+
+  const currentMinute =
+    Number(
+      getPart('minute')
+    );
+
+  const currentSecond =
+    Number(
+      getPart('second')
+    );
+
+  const currentSeconds =
+    currentHour * 3600 +
+    currentMinute * 60 +
+    currentSecond;
+
+  let nextTime =
+    null;
+
+  for (
+    const targets
+    of targetsByTrip.values()
+  ) {
+    for (
+      const target
+      of targets
+    ) {
+      if (
+        target.targetId !==
+        targetId ||
+        !target.scheduledTargetArrivalTime
+      ) {
+        continue;
+      }
+
+      if (
+        !isServiceActiveOnDate(
+          target.serviceId,
+          now,
+          calendar,
+          calendarDates
+        )
+      ) {
+        continue;
+      }
+
+      const parts =
+        target.scheduledTargetArrivalTime
+          .split(':');
+
+      const scheduledSeconds =
+        Number(parts[0]) * 3600 +
+        Number(parts[1]) * 60 +
+        Number(parts[2]);
+
+      if (
+        scheduledSeconds <=
+        currentSeconds
+      ) {
+        continue;
+      }
+
+      if (
+        nextTime === null ||
+        scheduledSeconds <
+        nextTime.seconds
+      ) {
+        nextTime = {
+          seconds:
+            scheduledSeconds,
+
+          time:
+            target.scheduledTargetArrivalTime
+        };
+      }
+    }
+  }
+
+  return nextTime
+    ? nextTime.time
+    : null;
+}
+
 function getTravelTimeStats({
   targetId,
   startTime,
@@ -520,6 +761,10 @@ const ROUTES = [
   {
     routeId: '110_0',
     shortName: '765'
+  },
+  {
+    routeId: '112_0',
+    shortName: '767'
   }
 ];
 
@@ -545,6 +790,14 @@ const TARGETS = [
     name: 'Charquinho',
     stopId: '13705',
     destination: 'Colégio Militar (Metro)'
+  },
+  {
+    id: '767-charquinho-test',
+    routeId: '112_0',
+    directionId: '1',
+    name: 'Charquinho',
+    stopId: '13705',
+    destination: 'Campo Mártires Pátria'
   }
 ];
 
@@ -873,6 +1126,7 @@ async function prepareData() {
   let tripRouteIndex = -1;
   let tripIdIndex = -1;
   let shapeIdIndex = -1;
+  let tripServiceIndex = -1;
   let directionIdIndex = -1;
 
   processCsv(
@@ -891,6 +1145,9 @@ async function prepareData() {
 
       directionIdIndex =
         header.indexOf('direction_id');
+
+      tripServiceIndex =
+        header.indexOf('service_id');
     },
 
     row => {
@@ -917,9 +1174,95 @@ async function prepareData() {
             row[shapeIdIndex],
 
           directionId:
-            row[directionIdIndex]
+            row[directionIdIndex],
+
+          serviceId:
+            row[tripServiceIndex]
         }
       );
+    }
+  );
+
+  const calendar =
+    new Map();
+
+  const calendarDates =
+    new Map();
+
+  processCsv(
+    zip,
+    'calendar.txt',
+
+    header => {
+      // Não precisamos de processar
+      // o header diretamente.
+    },
+
+    row => {
+      calendar.set(
+        row[0],
+        {
+          monday:
+            row[1] === '1',
+
+          tuesday:
+            row[2] === '1',
+
+          wednesday:
+            row[3] === '1',
+
+          thursday:
+            row[4] === '1',
+
+          friday:
+            row[5] === '1',
+
+          saturday:
+            row[6] === '1',
+
+          sunday:
+            row[7] === '1',
+
+          startDate:
+            row[8],
+
+          endDate:
+            row[9]
+        }
+      );
+    }
+  );
+
+  processCsv(
+    zip,
+    'calendar_dates.txt',
+
+    header => {
+      // Não precisamos de processar
+      // o header diretamente.
+    },
+
+    row => {
+      if (
+        !calendarDates.has(
+          row[0]
+        )
+      ) {
+        calendarDates.set(
+          row[0],
+          []
+        );
+      }
+
+      calendarDates
+        .get(row[0])
+        .push({
+          date:
+            row[1],
+
+          exceptionType:
+            Number(row[2])
+        });
     }
   );
 
@@ -1285,6 +1628,11 @@ async function prepareData() {
       targetsByTrip
         .get(tripId)
         .push({
+          tripId:
+            tripId,
+
+          serviceId:
+            trip.serviceId,
           targetId: target.id,
           targetName: target.name,
           destination: target.destination,
@@ -1343,7 +1691,9 @@ async function prepareData() {
     stopTimesByTrip,
     targetsByTrip,
     shapesById,
-    stopNames
+    stopNames,
+    calendar,
+    calendarDates
   };
 }
 
@@ -1806,7 +2156,11 @@ function calculateEta(
 function buildStatus(
   tracker,
   currentKeys,
-  lastPassedByTarget
+  lastPassedByTarget,
+  targetsByTrip,
+  calendar,
+  calendarDates,
+  referenceDate = new Date()
 ) {
   return {
     updatedAt: new Date().toISOString(),
@@ -1826,6 +2180,15 @@ function buildStatus(
 
       const next =
         vehicles[0] ?? null;
+
+      const nextScheduledTargetArrival =
+        getNextScheduledTargetArrival(
+          target.id,
+          targetsByTrip,
+          calendar,
+          calendarDates,
+          referenceDate
+        );
 
       const lastPassed =
         lastPassedByTarget.get(target.id) ?? null;
@@ -1885,6 +2248,11 @@ function buildStatus(
 
         lastPassed:
           recentLastPassed,
+
+        nextScheduledTargetArrival:
+          nextScheduledTargetArrival,
+
+
         vehicles: vehicles.map(vehicle => ({
           vehicleId: vehicle.vehicleId,
           licensePlate:
@@ -2046,6 +2414,12 @@ function startWebServer(getStatus) {
           '.accordion-icon{font-size:20px;color:#6b7280;transition:transform .15s ease}',
           '.accordion-icon.open{transform:rotate(90deg)}',
           '.accordion-content{margin-top:16px}',
+          '.accordion-status{margin-top:4px;font-size:13px;color:#6b7280}',
+          '.accordion-status.arriving{color:#15803d;font-weight:700}',
+          '.accordion-status{margin-top:4px;font-size:13px;color:#6b7280;display:flex;align-items:center;gap:7px}',
+          '.accordion-status.arriving{color:#15803d;font-weight:700}',
+          '.status-dot{width:8px;height:8px;border-radius:50%;background:#22c55e;display:inline-block;flex:0 0 auto;animation:pulse-dot 1.4s ease-in-out infinite}',
+          '@keyframes pulse-dot{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.35;transform:scale(.75)}}',
           '.route{font-size:15px;font-weight:500;color:#4b5563;margin-bottom:14px}',
           '.route strong{color:#111827;font-weight:750}',
           '.vehicle{border:1px solid #e5e7eb;border-radius:14px;padding:16px;background:#fafafa}',
@@ -2153,6 +2527,20 @@ function startWebServer(getStatus) {
           'const parts=time.split(":");',
           'if(parts.length<2)return time;',
           'return parts[0]+":"+parts[1];',
+          '}',
+          'function accordionStatus(t){',
+          'if(t.next && Number.isFinite(t.next.remainingMeters)){',
+          'if(t.next.remainingMeters<=500){',
+          'return "<div class=\\"accordion-status arriving\\"><span class=\\"status-dot\\"></span>Autocarro a chegar!</div>";',
+          '}',
+          'return "<div class=\\"accordion-status\\"><span class=\\"status-dot\\"></span>Autocarro a caminho</div>";',
+          '}',
+          '',
+          'if(t.nextScheduledTargetArrival){',
+          'return "<div class=\\"accordion-status\\">Próxima passagem prevista na paragem às <strong>"+fmtScheduledTime(t.nextScheduledTargetArrival)+"</strong></div>";',
+          '}',
+          '',
+          'return "";',
           '}',
           'function toggleTarget(targetId){',
           'if(openTargets.has(targetId)){',
@@ -2356,7 +2744,10 @@ function startWebServer(getStatus) {
           'const isOpen=openTargets.has(t.id);',
           'return "<div class=\\"card\\">"+',
           '"<div class=\\"accordion-header\\" data-target-id=\\""+t.id+"\\">"+',
+          '"<div>"+',
           '"<div class=\\"route\\"><strong>"+t.routeShortName+"</strong> · "+t.name+" → "+t.destination+"</div>"+',
+          'accordionStatus(t)+',
+          '"</div>"+',
           '"<div class=\\"accordion-icon "+(isOpen?"open":"")+"\\">›</div>"+',
           '"</div>"+',
           '(isOpen?',
@@ -2372,6 +2763,7 @@ function startWebServer(getStatus) {
           'return "<div class=\\"card\\">"+',
           '"<div class=\\"accordion-header\\" data-target-id=\\""+t.id+"\\">"+',
           '"<div class=\\"route\\"><strong>"+t.routeShortName+"</strong> · "+t.name+" → "+t.destination+"</div>"+',
+          'accordionStatus(t)+',
           '"<div class=\\"accordion-icon "+(isOpen?"open":"")+"\\">›</div>"+',
           '"</div>"+',
           '(isOpen?',
@@ -2444,6 +2836,17 @@ function startWebServer(getStatus) {
 async function main() {
   const data =
     await prepareData();
+
+  testCalendarForDate(
+    '2026-09-28',
+    [
+      'Inverno_Util_20260606',
+      'Inverno_Sabado_20260606',
+      'Inverno_DomingoFeriado_20260606'
+    ],
+    data.calendar,
+    data.calendarDates
+  );
 
   /*
    * vehicleId:targetId -> {
@@ -2801,7 +3204,10 @@ async function main() {
         buildStatus(
           tracker,
           currentKeys,
-          lastPassedByTarget
+          lastPassedByTarget,
+          data.targetsByTrip,
+          data.calendar,
+          data.calendarDates
         );
 
       // ==========================
