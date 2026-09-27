@@ -2221,7 +2221,7 @@ function buildStatus(
           calendar,
           calendarDates,
           referenceDate,
-          lastPassed
+          lastPassedByTarget.get(target.id)
         );
 
       const lastPassedAgeMs =
@@ -2796,7 +2796,7 @@ function startWebServer(getStatus) {
           'const isOpen=openTargets.has(t.id);',
           'return "<div class=\\"card\\">"+',
           '"<div class=\\"accordion-header\\" data-target-id=\\""+t.id+"\\">"+',
-                    '"<div class=\\"route\\"><strong>"+t.routeShortName+"</strong> · "+t.firstStopName+" → <span class=\\"target-stop\\">"+t.name+"</span> → "+t.destination+"</div>"+',
+          '"<div class=\\"route\\"><strong>"+t.routeShortName+"</strong> · "+t.firstStopName+" → <span class=\\"target-stop\\">"+t.name+"</span> → "+t.destination+"</div>"+',
           'accordionStatus(t)+',
           '"<div class=\\"accordion-icon "+(isOpen?"open":"")+"\\">›</div>"+',
           '"</div>"+',
