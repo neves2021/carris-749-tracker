@@ -93,7 +93,8 @@ const insertPassageEvent =
       license_plate,
       target_id,
       stop_id,
-      scheduled_arrival
+      scheduled_arrival,
+      delay_Seconds
     )
     VALUES (
       @serviceDate,
@@ -104,7 +105,8 @@ const insertPassageEvent =
       @licensePlate,
       @targetId,
       @stopId,
-      @scheduledArrival
+      @scheduledArrival,
+      @delaySeconds
     )
   `);
 
@@ -727,6 +729,29 @@ function savePassageEvent(vehicle) {
         }
       );
 
+  const scheduledParts =
+    vehicle.scheduledTargetArrivalTime
+      ?.split(':')
+      .map(Number);
+
+  const scheduledSeconds =
+    scheduledParts &&
+      scheduledParts.length >= 3
+      ? scheduledParts[0] * 3600 +
+      scheduledParts[1] * 60 +
+      scheduledParts[2]
+      : null;
+
+  const actualSeconds =
+    observedAt.getHours() * 3600 +
+    observedAt.getMinutes() * 60 +
+    observedAt.getSeconds();
+
+  const delaySeconds =
+    scheduledSeconds !== null
+      ? actualSeconds - scheduledSeconds
+      : null;
+
   insertPassageEvent.run({
     serviceDate,
 
@@ -752,7 +777,9 @@ function savePassageEvent(vehicle) {
       vehicle.stopId,
 
     scheduledArrival:
-      vehicle.scheduledTargetArrivalTime
+      vehicle.scheduledTargetArrivalTime,
+
+    delaySeconds
   });
 }
 
@@ -2242,7 +2269,9 @@ function buildStatus(
             passedAt:
               new Date(
                 lastPassed.passedAt
-              ).toISOString()
+              ).toISOString(),
+            delaySeconds:
+              lastPassed.delaySeconds
           }
           : null;
 
@@ -2772,8 +2801,16 @@ function startWebServer(getStatus) {
           'if(!n){',
           'const lastPassed=t.lastPassed;',
           'const relative=lastPassed?fmtRelativeTime(lastPassed.passedAt):null;',
+          'const delaySeconds=lastPassed?lastPassed.delaySeconds:null;',
+          'const delayText=delaySeconds==null',
+          '  ? ""',
+          '  : delaySeconds<0',
+          '    ? " · "+Math.abs(Math.round(delaySeconds/60))+" min adiantado"',
+          '    : delaySeconds>0',
+          '      ? " · "+Math.round(delaySeconds/60)+" min atrasado"',
+          '      : " · à hora";',
           'const lastPassedHtml=relative',
-          '  ? "<div class=\\"last-passed\\">Último "+t.routeShortName+" passou há "+relative+"</div>"',
+          '  ? "<div class=\\"last-passed\\">Último "+t.routeShortName+" passou há "+relative+delayText+"</div>"',
           '  : "";',
           'const isOpen=openTargets.has(t.id);',
           'return "<div class=\\"card\\">"+',
@@ -3036,8 +3073,14 @@ async function main() {
                   vehicle.vehicleId,
                 licensePlate:
                   vehicle.licensePlate,
+                tripId:
+                  vehicle.tripId,
+                scheduledTargetArrivalTime:
+                  vehicle.scheduledTargetArrivalTime,
                 passedAt:
-                  vehicle.timestamp * 1000
+                  vehicle.timestamp * 1000,
+                delaySeconds:
+                  vehicle.delaySeconds
               }
             );
 
@@ -3161,7 +3204,9 @@ async function main() {
               scheduledTargetArrivalTime:
                 vehicle.scheduledTargetArrivalTime,
               passedAt:
-                vehicle.timestamp * 1000
+                vehicle.timestamp * 1000,
+              delaySeconds:
+                vehicle.delaySeconds
             }
           );
 
