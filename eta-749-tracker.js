@@ -2441,6 +2441,95 @@ function startWebServer(getStatus) {
         return;
       }
 
+      if (req.url.startsWith('/api/next')) {
+        const url =
+          new URL(
+            req.url,
+            `http://${req.headers.host || 'localhost'}`
+          );
+
+        const targetId =
+          url.searchParams.get('target');
+
+        const status =
+          getStatus();
+
+        const target =
+          status.targets.find(
+            item =>
+              item.id === targetId
+          );
+
+        if (!target) {
+          res.writeHead(404, {
+            'Content-Type':
+              'application/json; charset=utf-8'
+          });
+
+          res.end(
+            JSON.stringify({
+              error:
+                'Target not found'
+            })
+          );
+
+          return;
+        }
+
+        const next =
+          target.next;
+
+        res.writeHead(200, {
+          'Content-Type':
+            'application/json; charset=utf-8',
+          'Cache-Control':
+            'no-store'
+        });
+
+        res.end(
+          JSON.stringify({
+            targetId:
+              target.id,
+
+            route:
+              target.routeShortName,
+
+            stop:
+              target.name,
+
+            destination:
+              target.destination,
+
+            vehicleId:
+              next
+                ? next.vehicleId
+                : null,
+
+            distanceMeters:
+              next
+                ? Math.round(next.remainingMeters)
+                : null,
+
+            etaSeconds:
+              next
+                ? Math.round(next.etaSeconds)
+                : null,
+
+            arrival:
+              next
+                ? next.scheduledTargetArrivalTime
+                : null,
+
+            type:
+              next
+                ? 'realtime'
+                : 'none'
+          })
+        );
+
+        return;
+      }
+
       if (req.url === '/api/status') {
         res.writeHead(200, {
           'Content-Type': 'application/json; charset=utf-8',
