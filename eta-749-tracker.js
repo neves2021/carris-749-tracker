@@ -2530,6 +2530,95 @@ function startWebServer(getStatus) {
         return;
       }
 
+      if (req.url.startsWith('/api/voice')) {
+        const url =
+          new URL(
+            req.url,
+            `http://${req.headers.host || 'localhost'}`
+          );
+
+        const targetId =
+          url.searchParams.get('target');
+
+        const status =
+          getStatus();
+
+        const target =
+          status.targets.find(
+            item =>
+              item.id === targetId
+          );
+
+        if (!target) {
+          res.writeHead(404, {
+            'Content-Type':
+              'application/json; charset=utf-8'
+          });
+
+          res.end(
+            JSON.stringify({
+              error:
+                'Target not found'
+            })
+          );
+
+          return;
+        }
+
+        const next =
+          target.next;
+
+        let message;
+
+        if (!next) {
+          message =
+            `Não há nenhum ${target.routeShortName} em aproximação neste momento.`;
+        } else {
+          const distance =
+            Math.round(
+              next.remainingMeters
+            );
+
+          message =
+            `O próximo ${target.routeShortName} está a ${distance} metros da paragem.`;
+
+          if (
+            next.etaSeconds != null &&
+            Number.isFinite(
+              next.etaSeconds
+            )
+          ) {
+            const etaMinutes =
+              Math.max(
+                1,
+                Math.round(
+                  next.etaSeconds / 60
+                )
+              );
+
+            message +=
+              ` Chega em cerca de ${etaMinutes} minuto${etaMinutes === 1 ? '' : 's'}.`;
+          }
+        }
+
+        res.writeHead(200, {
+          'Content-Type':
+            'application/json; charset=utf-8',
+          'Cache-Control':
+            'no-store'
+        });
+
+        res.end(
+          JSON.stringify({
+            targetId:
+              target.id,
+            message
+          })
+        );
+
+        return;
+      }
+
       if (req.url === '/api/status') {
         res.writeHead(200, {
           'Content-Type': 'application/json; charset=utf-8',
