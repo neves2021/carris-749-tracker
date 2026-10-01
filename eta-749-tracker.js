@@ -2612,6 +2612,18 @@ function startWebServer(getStatus) {
           JSON.stringify({
             targetId:
               target.id,
+            hasBus:
+              !!next,
+            distanceMeters:
+              next
+                ? Math.round(next.remainingMeters)
+                : null,
+            etaSeconds:
+              next &&
+                next.etaSeconds != null &&
+                Number.isFinite(next.etaSeconds)
+                ? Math.round(next.etaSeconds)
+                : null,
             message
           })
         );
